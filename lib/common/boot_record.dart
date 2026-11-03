@@ -197,7 +197,7 @@ class BootDecision {
 BootDecision resolveBootDecision({
   required BootRecord? record,
   required AppExitInfo? exitInfo,
-  required bool crashReported,
+  bool crashReported = false,
 }) {
   if (record == null || record.stage != BootStage.starting) {
     return const BootDecision();

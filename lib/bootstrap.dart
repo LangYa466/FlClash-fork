@@ -93,7 +93,6 @@ class Bootstrap {
     var config = await migration.run();
     _bootDecision = await bootGuard.evaluate(
       profileId: config.currentProfileId,
-      crashlyticsEnabled: config.appSettingProps.crashlytics,
     );
     if (_bootDecision.recovery == BootRecovery.clearProfile) {
       config = config.copyWith(currentProfileId: null);

@@ -24,6 +24,23 @@ A multi-platform proxy client based on ClashMeta. Simple to use, open source and
   </picture>
 </p>
 
+## About this fork
+
+This is a fork of [chen08209/FlClash](https://github.com/chen08209/FlClash). Differences from the upstream release:
+
+- **Older UI**: the app is based on upstream v0.8.99, so it keeps the earlier interface and does not include the
+  redesign that arrived in 0.9.x (iOS-style surfaces, Liquid Glass, the new dashboard, and so on). The 0.9.x core and
+  feature changes are not included either.
+- **No IP type or quality labels**: the outbound IP is shown as plain text, with no hosting/residential tag, quality
+  level or details sheet.
+- **No first-run prompts**: the disclaimer page and the Android data collection prompt are removed.
+- **No Firebase**: Firebase Crashlytics, Analytics and `google-services.json` are removed from the Android build,
+  along with the crash reporting switch.
+- **Updates come from this fork**: the update check and the repository links use
+  [LangYa466/FlClash-fork](https://github.com/LangYa466/FlClash-fork) releases.
+
+Everything else follows upstream. WebDAV backup is kept; it only talks to a server you configure.
+
 ## Features
 
 - **One app for Android, Windows, macOS and Linux**, with x64 and ARM64 builds on the desktop.

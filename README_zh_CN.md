@@ -24,6 +24,19 @@
   </picture>
 </p>
 
+## 关于此 Fork
+
+本项目 fork 自 [chen08209/FlClash](https://github.com/chen08209/FlClash)，与原版的区别如下：
+
+- **旧版 UI**：基于上游 v0.8.99，保留之前的界面，不包含 0.9.x 的界面重构（iOS 风格分层、Liquid Glass、新仪表盘等），
+  0.9.x 的内核与功能改动也没有合入。
+- **无 IP 类型 / 质量标签**：出口 IP 只显示文本，没有机房 / 住宅标签、质量等级和详情面板。
+- **无首次进入弹窗**：移除免责声明页面和 Android 的数据收集提示。
+- **无 Firebase**：Android 构建中移除 Firebase Crashlytics、Analytics 和 `google-services.json`，崩溃上报开关也一并删除。
+- **更新来自本 Fork**：检查更新和仓库链接指向 [LangYa466/FlClash-fork](https://github.com/LangYa466/FlClash-fork) 的 Release。
+
+其余与上游一致。WebDAV 备份保留，它只会连接你自己配置的服务器。
+
 ## 功能
 
 - **一个应用覆盖 Android、Windows、macOS 和 Linux**，桌面端同时提供 x64 与 ARM64 版本。
