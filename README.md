@@ -65,6 +65,7 @@
 - **相关测试**：删除只针对上述功能的测试文件，其余测试同步改掉了对应的断言。
 - **第三方发布渠道**：删除 CI 里推送到 Telegram、Homebrew tap 和 F-Droid 仓库的步骤，以及 `release_telegram.py`
   和 Homebrew cask 模板。README 中的 F-Droid、Homebrew 安装方式和官网链接一并删除。
+- **GitHub Pages 官网**：删除 `site/` 目录、Pages 部署工作流和官网构建脚本。
 
 ### 本 fork 另外修改的内容
 
@@ -72,7 +73,9 @@
   tag 形如 `v0.9.3`，版本号高于当前版本才会提示更新。
 - **链接**：关于页、Issue 模板、Release 模板、徽章和构建脚本中的仓库地址改为本仓库，Telegram 频道改为
   [t.me/langya_channel](https://t.me/langya_channel)。
-- **CI 发布**：打 `v*` 标签后，只在本仓库构建并发布 GitHub Release 与 `SHA256SUMS`。
+- **CI 发布**：打 `v*` 标签后，只在本仓库构建并发布 GitHub Release 与 `SHA256SUMS`。构建不再要求 Android 签名密钥，
+  APK 使用 debug 签名，所以没有稳定的签名身份，覆盖安装前请确认来源。
+- **版本号**：从 `0.9.3` 起计，高于 v0.8.99，以便更新检测生效。
 
 ### 保留的部分
 

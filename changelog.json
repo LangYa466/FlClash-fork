@@ -2,6 +2,44 @@
   "schemaVersion": 2,
   "versions": [
     {
+      "version": "0.9.3",
+      "tag": "v0.9.3",
+      "date": "2026-11-03",
+      "prerelease": false,
+      "groups": [
+        {
+          "type": "feat",
+          "entries": [
+            {
+              "id": "fork0",
+              "scope": "ui",
+              "text": "Back to the v0.8.99 interface"
+            },
+            {
+              "id": "fork1",
+              "scope": "dashboard",
+              "text": "Remove IP type and quality labels"
+            },
+            {
+              "id": "fork2",
+              "scope": "app",
+              "text": "Remove the first-run disclaimer and the data collection prompt"
+            },
+            {
+              "id": "fork3",
+              "scope": "android",
+              "text": "Remove Firebase and crash reporting"
+            },
+            {
+              "id": "fork4",
+              "scope": "update",
+              "text": "Check for updates against LangYa466/FlClash-fork"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.8.99",
       "tag": "v0.8.99",
       "date": "2026-10-03",

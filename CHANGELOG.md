@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.3 (2026-11-03)
+
+**Features**
+
+- **ui** Back to the v0.8.99 interface (fork0)
+- **dashboard** Remove IP type and quality labels (fork1)
+- **app** Remove the first-run disclaimer and the data collection prompt (fork2)
+- **android** Remove Firebase and crash reporting (fork3)
+- **update** Check for updates against LangYa466/FlClash-fork (fork4)
+
 ## v0.8.99 (2026-10-03)
 
 **Features**
