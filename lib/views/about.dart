@@ -100,8 +100,8 @@ class AboutView extends ConsumerWidget {
               _buildLinkItem(
                 glyph: AppGlyphs.send,
                 title: 'Telegram',
-                url: 'https://t.me/FlClash',
-                label: 't.me/FlClash',
+                url: 'https://t.me/langya_channel',
+                label: 't.me/langya_channel',
               ),
             ],
           ),
