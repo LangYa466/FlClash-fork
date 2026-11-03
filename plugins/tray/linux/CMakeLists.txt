@@ -10,6 +10,8 @@ add_library(${PLUGIN_NAME} SHARED
   "tray_plugin.cc"
 )
 apply_standard_settings(${PLUGIN_NAME})
+# Newer Ayatana releases deprecate app_indicator_new; the standard -Werror would fail the build.
+target_compile_options(${PLUGIN_NAME} PRIVATE -Wno-error=deprecated-declarations)
 set_target_properties(${PLUGIN_NAME} PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
