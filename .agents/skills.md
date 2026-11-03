@@ -7,10 +7,9 @@ match a task against the skill `name` and `description`, then load the full inst
 ## Available Repo Skills
 
 - `localization`: hardcoded UI text scans, ARB updates, locale generation, and localization verification.
-- `ui-work`: Flutter UI, widgets, Material You styling, icons and glyphs, shapes and corner radii, navigation surfaces,
-  async feedback, and user-facing interactions.
+- `ui-work`: Flutter UI, widgets, Material You styling, navigation surfaces, async feedback, and user-facing interactions.
 - `core-platform`: Core lifecycle/process ownership, Android services, Go event delivery, desktop IPC, platform managers,
-  build hooks, system proxy, tray, VPN/TUN, and the Windows and Linux Helper.
+  VPN/TUN, and Windows Helper flow.
 - `pre-commit-quality-review`: lightweight triage before commits, with scoped structural review and user decisions on concrete regressions.
 
 ## Authoring Notes

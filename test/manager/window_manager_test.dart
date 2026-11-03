@@ -1,14 +1,14 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:fl_clash/common/app_localizations.dart';
 import 'package:fl_clash/common/app_ports.dart';
+import 'package:fl_clash/common/feature.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/manager/window_manager.dart';
 import 'package:fl_clash/models/config.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -47,13 +47,13 @@ class _RecordingWindowPort implements WindowPort {
   final blurRequests = <_BlurRequest>[];
 
   @override
-  Future<double?> setBlur({
+  Future<bool> setBlur({
     required bool enabled,
     required Brightness brightness,
     required Color tint,
   }) async {
     blurRequests.add((enabled: enabled, brightness: brightness, tint: tint));
-    return enabled && supportsBlur ? 0 : null;
+    return enabled && supportsBlur;
   }
 
   @override
@@ -142,19 +142,11 @@ void main() {
     container.dispose();
   });
 
-  Future<WindowListener> pumpWindowManager(
-    WidgetTester tester, {
-    Stream<ProcessSignal>? terminateSignals,
-  }) async {
+  Future<WindowListener> pumpWindowManager(WidgetTester tester) async {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: MaterialApp(
-          home: WindowManager(
-            terminateSignals: terminateSignals,
-            child: const SizedBox.shrink(),
-          ),
-        ),
+        child: const MaterialApp(home: WindowManager(child: SizedBox.shrink())),
       ),
     );
     await tester.pump();
@@ -192,22 +184,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(_RecordingSystemAction.calls, ['exit']);
-  });
-
-  testWidgets('a terminate signal exits like a terminate request', (
-    tester,
-  ) async {
-    final signals = StreamController<ProcessSignal>();
-    addTearDown(signals.close);
-    await pumpWindowManager(tester, terminateSignals: signals.stream);
-
-    signals.add(ProcessSignal.sigterm);
-    await tester.pumpAndSettle();
-
-    expect(_RecordingSystemAction.calls, ['exit']);
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    expect(signals.hasListener, isFalse);
   });
 
   testWidgets('moving the window records its new position', (tester) async {
@@ -248,22 +224,21 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('sidebar blur starts off and start-up still asks for no effect', (
-    tester,
-  ) async {
-    await pumpWindowManager(tester);
-    await tester.pumpAndSettle();
-
-    expect(container.read(themeSettingProvider).sidebarBlur, isFalse);
-    expect(window.blurRequests.single.enabled, isFalse);
-    expect(container.read(windowBlurProvider), isNull);
-  });
-
   group('sidebar blur', () {
-    setUp(() {
-      container
-          .read(themeSettingProvider.notifier)
-          .update((state) => state.copyWith(sidebarBlur: true));
+    setUp(() => feature = const Feature(sidebarBlur: true));
+
+    tearDown(() => feature = const Feature());
+
+    testWidgets('a disabled feature drops the backdrop despite the setting', (
+      tester,
+    ) async {
+      feature = const Feature();
+      await pumpWindowManager(tester);
+      await tester.pumpAndSettle();
+
+      expect(container.read(themeSettingProvider).sidebarBlur, isTrue);
+      expect(window.blurRequests.single.enabled, isFalse);
+      expect(container.read(windowBlurProvider), isFalse);
     });
 
     testWidgets('is applied on start and mirrored into the provider', (
@@ -275,7 +250,7 @@ void main() {
       expect(window.blurRequests, hasLength(1));
       expect(window.blurRequests.single.enabled, isTrue);
       expect(window.blurRequests.single.brightness, Brightness.dark);
-      expect(container.read(windowBlurProvider), 0);
+      expect(container.read(windowBlurProvider), isTrue);
     });
 
     testWidgets('a platform without a backdrop leaves the provider off', (
@@ -285,7 +260,7 @@ void main() {
       await pumpWindowManager(tester);
       await tester.pumpAndSettle();
 
-      expect(container.read(windowBlurProvider), isNull);
+      expect(container.read(windowBlurProvider), isFalse);
     });
 
     testWidgets('turning the setting off drops the backdrop', (tester) async {
@@ -298,7 +273,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(window.blurRequests.last.enabled, isFalse);
-      expect(container.read(windowBlurProvider), isNull);
+      expect(container.read(windowBlurProvider), isFalse);
     });
 
     testWidgets('a theme mode change reapplies the effect', (tester) async {
@@ -312,7 +287,7 @@ void main() {
 
       expect(window.blurRequests.last.enabled, isTrue);
       expect(window.blurRequests.last.brightness, Brightness.light);
-      expect(container.read(windowBlurProvider), 0);
+      expect(container.read(windowBlurProvider), isTrue);
     });
   });
 

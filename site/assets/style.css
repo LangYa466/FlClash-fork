@@ -379,7 +379,6 @@ button {
 }
 
 .stars {
-  text-align: end;
   font-variant-numeric: tabular-nums;
 }
 
@@ -445,8 +444,6 @@ button {
   position: relative;
   width: 16px;
   height: 6px;
-  border-radius: 99px;
-  overflow: hidden;
 }
 
 .pulse::after {
@@ -455,10 +452,9 @@ button {
   top: 0;
   bottom: 0;
   left: 0;
-  right: 0;
+  right: 10px;
   border-radius: 99px;
   background: var(--accent);
-  transform: translateX(-10px);
 }
 
 .hero-grid {
@@ -1775,6 +1771,19 @@ mark {
   .release.shown .mark {
     animation: mark-in 0.7s var(--spring-pop) 0.2s backwards;
   }
+
+  @supports (animation-timeline: view()) {
+    .nav-progress {
+      animation: progress linear both;
+      animation-timeline: scroll(root block);
+    }
+
+    .shot {
+      animation: flatten linear both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 42%;
+    }
+  }
 }
 
 @keyframes rise {
@@ -1804,18 +1813,33 @@ mark {
   }
 }
 
+@keyframes flatten {
+  from {
+    transform: rotateX(18deg) scale(0.93);
+  }
+}
+
+@keyframes progress {
+  to {
+    transform: scaleX(1);
+  }
+}
+
 @keyframes inch {
   0%,
   14% {
-    transform: translateX(-10px);
+    left: 0;
+    right: 10px;
   }
   40%,
   60% {
-    transform: none;
+    left: 0;
+    right: 0;
   }
   86%,
   100% {
-    transform: translateX(10px);
+    left: 10px;
+    right: 0;
   }
 }
 

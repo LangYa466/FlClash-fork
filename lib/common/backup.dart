@@ -30,7 +30,8 @@ abstract final class BackupEntries {
   static String script(Object id) => 'scripts/$id.js';
 
   static String provider(ClashProvider provider) =>
-      '$providersDirectoryName/$rulesProviderDirectoryName/${provider.fileName}';
+      '$providersDirectoryName/${providerCacheDirectoryName(provider.kind)}/'
+      '${provider.fileName}';
 
   /// A remote provider's cache belongs to the Core and downloads again.
   static List<String> of({
@@ -168,34 +169,33 @@ Future<MigrationData> readBackupArchive({
     final results = await Future.wait([
       database.profilesDao.query().get(),
       database.scriptsDao.query().get(),
-      (database.select(database.rules)..orderBy([
+      database.rules.all().map((item) => item.toRule()).get(),
+      (database.select(database.profileRuleLinks)..orderBy([
             (t) => OrderingTerm(expression: t.order, nulls: NullsOrder.last),
           ]))
-          .map((item) => item.toRule())
-          .get(),
-      database
-          .select(database.disabledRules)
-          .map((item) => item.toDisabledRule())
+          .map((item) => item.toLink())
           .get(),
       (database.select(database.proxyGroups)..orderBy([
             (t) => OrderingTerm(expression: t.order, nulls: NullsOrder.last),
           ]))
           .map((item) => item.toProxyGroup())
           .get(),
-      database.clashProvidersDao.query().get(),
-      database.customProxiesDao.query().get(),
-      database.proxyDialers.readable((row) => row.toProxyDialer()).get(),
+      database.clashProvidersDao.queryAll().get(),
+      (database.select(database.customProxies)..orderBy([
+            (t) => OrderingTerm(expression: t.order, nulls: NullsOrder.last),
+          ]))
+          .map((item) => item.toCustomProxy())
+          .get(),
     ]);
     return MigrationData(
       configMap: configMap,
       profiles: results[0].cast<Profile>(),
       scripts: results[1].cast<Script>(),
       rules: results[2].cast<Rule>(),
-      disabledRules: results[3].cast<DisabledRule>(),
+      links: results[3].cast<ProfileRuleLink>(),
       proxyGroups: results[4].cast<ProxyGroup>(),
       clashProviders: results[5].cast<ClashProvider>(),
       customProxies: results[6].cast<CustomProxy>(),
-      proxyDialers: results[7].cast<ProxyDialer>(),
     );
   } finally {
     await database.close();

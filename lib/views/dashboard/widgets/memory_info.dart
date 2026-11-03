@@ -2,20 +2,20 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/core/method.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/core.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
-import 'package:fl_clash/views/dashboard/layout.dart';
-import 'package:fl_clash/views/dashboard/style.dart';
+import 'package:fl_clash/state.dart';
+import 'package:fl_clash/views/dashboard/widget_metrics.dart';
 import 'package:fl_clash/widgets/widgets.dart';
+import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
-import 'card.dart';
 
 @immutable
 class MemorySnapshot {
@@ -58,35 +58,8 @@ class MemorySnapshot {
   }
 }
 
-typedef MemoryReader = Future<MemorySnapshot> Function();
-
-Future<MemorySnapshot?> _readMemory(WidgetRef ref, MemoryReader? reader) async {
-  try {
-    return reader != null ? await reader() : await _readSnapshot(ref);
-  } catch (error) {
-    commonPrint.log(
-      'updateMemory error: $error',
-      logLevel: coreFailureLogLevel(error),
-    );
-    return null;
-  }
-}
-
-Future<MemorySnapshot> _readSnapshot(WidgetRef ref) async {
-  final rss = ProcessInfo.currentRss;
-  final coreConnected = ref.read(coreStatusProvider) == CoreStatus.connected;
-  final core = coreConnected
-      ? await ref.read(coreHandlerProvider).getMemoryStats()
-      : null;
-  return MemorySnapshot.resolve(
-    rss: rss,
-    core: core,
-    coreInProcess: system.isAndroid,
-  );
-}
-
 class MemoryInfo extends ConsumerStatefulWidget {
-  final MemoryReader? memoryReader;
+  final Future<MemorySnapshot> Function()? memoryReader;
 
   const MemoryInfo({super.key, @visibleForTesting this.memoryReader});
 
@@ -99,13 +72,11 @@ class _MemoryInfoState extends ConsumerState<MemoryInfo>
   final _memoryStateNotifier = ValueNotifier<MemorySnapshot>(
     const MemorySnapshot(),
   );
-  var _detailOpen = false;
+
+  CoreController get _core => ref.read(coreHandlerProvider);
 
   @override
   Duration get pollInterval => const Duration(seconds: 2);
-
-  @override
-  bool get canPoll => super.canPoll && !_detailOpen;
 
   @override
   void dispose() {
@@ -115,215 +86,142 @@ class _MemoryInfoState extends ConsumerState<MemoryInfo>
 
   @override
   Future<void> poll(PollGuard isCurrent) async {
-    final memory = await _readMemory(ref, widget.memoryReader);
+    final memory = await _readMemory();
     if (memory == null || !isCurrent()) {
       return;
     }
     _memoryStateNotifier.value = memory;
   }
 
-  // The sheet outlives the card when a resize swaps the dashboard layout, so it
-  // reads on its own and the card rests until it closes.
-  Future<void> _showDetail() async {
-    if (_detailOpen) {
-      return;
+  Future<MemorySnapshot?> _readMemory() async {
+    try {
+      final memoryReader = widget.memoryReader;
+      return memoryReader != null
+          ? await memoryReader()
+          : await _readSnapshot();
+    } catch (error) {
+      commonPrint.log(
+        'updateMemory error: $error',
+        logLevel: coreFailureLogLevel(error),
+      );
+      return null;
     }
-    _detailOpen = true;
-    stopPolling();
-    await showSheet(
-      context: context,
-      builder: (_) => MemoryDetailSheet(
-        initial: _memoryStateNotifier.value,
-        memoryReader: widget.memoryReader,
-      ),
-    );
-    if (!mounted) {
-      return;
-    }
-    _detailOpen = false;
-    restartPolling();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final appLocalizations = context.appLocalizations;
-    final density = DashboardDensityScope.of(context);
-    final mobile = !density.isDesktop;
-    final summary = ValueListenableBuilder(
-      valueListenable: _memoryStateNotifier,
-      builder: (_, memory, _) =>
-          _MemorySummary(memory: memory, density: density),
-    );
-    return DashboardCard(
-      semanticLabel: appLocalizations.memoryInfo,
-      onTap: mobile ? _showDetail : null,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: mobile ? MainAxisSize.min : MainAxisSize.max,
-        children: [
-          DashboardCardHeader(
-            glyph: AppGlyphs.memory,
-            title: appLocalizations.memoryInfo,
-            chevron: mobile,
-            trailing: [
-              if (!mobile)
-                Transform.translate(
-                  offset: const Offset(8, 0),
-                  child: DashboardIconButton(
-                    glyph: AppGlyphs.chevronForward,
-                    tooltip: appLocalizations.details(
-                      appLocalizations.memoryInfo,
-                    ),
-                    onPressed: _showDetail,
-                  ),
-                ),
-            ],
-          ),
-          SizedBox(
-            height: mobile
-                ? 12
-                : density.isCompact
-                ? 4
-                : 6,
-          ),
-          if (mobile) summary else Expanded(child: summary),
-        ],
-      ),
+  Future<MemorySnapshot> _readSnapshot() async {
+    final rss = ProcessInfo.currentRss;
+    final coreConnected = ref.read(coreStatusProvider) == CoreStatus.connected;
+    final core = coreConnected ? await _core.getMemoryStats() : null;
+    return MemorySnapshot.resolve(
+      rss: rss,
+      core: core,
+      coreInProcess: system.isAndroid,
     );
   }
-}
 
-class _MemorySummary extends StatelessWidget {
-  const _MemorySummary({required this.memory, required this.density});
-
-  final MemorySnapshot memory;
-  final DashboardDensity density;
-
-  @override
-  Widget build(BuildContext context) {
-    final appLocalizations = context.appLocalizations;
-    final colorScheme = context.colorScheme;
-    final mobile = !density.isDesktop;
-    final compact = density.isCompact;
-    final total = memory.total.traffic;
-    final figure = mobile ? AppTextStyle.title1 : AppTextStyle.title2;
-    final parts = [
-      (
-        label: appLocalizations.app,
-        bytes: memory.app,
-        color: colorScheme.primary,
-      ),
-      (
-        label: appLocalizations.core,
-        bytes: memory.coreTotal,
-        color: DashboardColors.of(context).series2,
-      ),
-    ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: mobile ? MainAxisSize.min : MainAxisSize.max,
-      children: [
-        Text.rich(
-          TextSpan(
-            children: [
-              TextSpan(
-                text: total.value,
-                style: DashboardText.figure(context, figure),
-              ),
-              TextSpan(
-                text: ' ${total.unit}',
-                style: DashboardText.unit(context, AppTextStyle.footnote),
-              ),
-            ],
-          ),
-          maxLines: 1,
-        ),
-        if (mobile) const SizedBox(height: 14) else const Spacer(),
-        _MemoryBar(
-          segments: [
-            for (final part in parts) (bytes: part.bytes, color: part.color),
-          ],
-        ),
-        SizedBox(height: compact ? 8 : 10),
-        Wrap(
-          spacing: 16,
-          runSpacing: 4,
-          children: [
-            for (final part in parts)
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                spacing: 6,
-                children: [
-                  DecoratedBox(
-                    decoration: ShapeDecoration(
-                      color: part.color,
-                      shape: AppShape.circle,
-                    ),
-                    child: const SizedBox.square(dimension: 8),
-                  ),
-                  Text(part.label, style: DashboardText.label(context)),
-                  Text(
-                    '${part.bytes.traffic.value} ${part.bytes.traffic.unit}',
-                    style: AppTextStyle.footnote
-                        .of(context, emphasized: true)
-                        .toTabular,
-                  ),
-                ],
-              ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class MemoryDetailSheet extends ConsumerStatefulWidget {
-  const MemoryDetailSheet({
-    super.key,
-    required this.initial,
-    @visibleForTesting this.memoryReader,
-  });
-
-  final MemorySnapshot initial;
-  final MemoryReader? memoryReader;
-
-  @override
-  ConsumerState<MemoryDetailSheet> createState() => _MemoryDetailSheetState();
-}
-
-class _MemoryDetailSheetState extends ConsumerState<MemoryDetailSheet>
-    with WidgetsBindingObserver, ActivePollingMixin<MemoryDetailSheet> {
-  static const _minReleaseFeedback = Duration(milliseconds: 500);
-
-  late MemorySnapshot _snapshot = widget.initial;
-  bool _isReleasing = false;
-
-  @override
-  Duration get pollInterval => const Duration(seconds: 2);
-
-  @override
-  Future<void> poll(PollGuard isCurrent) async {
-    final memory = await _readMemory(ref, widget.memoryReader);
-    if (memory == null || !isCurrent()) {
-      return;
-    }
-    setState(() => _snapshot = memory);
-  }
-
-  /// Resolves to the bytes freed.
-  Future<int> _release() async {
-    final before = _snapshot.total;
-    await ref.read(coreHandlerProvider).requestGc();
-    if (!mounted) {
-      return 0;
-    }
-    final memory = await _readMemory(ref, widget.memoryReader);
+  Future<int> _releaseMemory() async {
+    final before = _memoryStateNotifier.value.total;
+    await _core.requestGc();
+    final memory = await _readMemory();
     if (memory == null || !mounted) {
       return 0;
     }
-    setState(() => _snapshot = memory);
+    _memoryStateNotifier.value = memory;
     return max(0, before - memory.total);
   }
+
+  void _showDetail() {
+    showSheet(
+      context: context,
+      builder: (_) {
+        return MemoryDetailSheet(
+          snapshot: _memoryStateNotifier,
+          onRelease: _releaseMemory,
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appLocalizations = context.appLocalizations;
+    return SizedBox(
+      height: DashboardWidgetMetrics.heightOf(context, 1),
+      child: RepaintBoundary(
+        child: CommonCard(
+          radius: DashboardWidgetMetrics.radiusOf(context),
+          infoPadding: DashboardWidgetMetrics.paddingOf(
+            context,
+          ).copyWith(bottom: 0),
+          info: Info(
+            glyph: AppGlyphs.memory,
+            label: appLocalizations.memoryInfo,
+          ),
+          onPressed: _showDetail,
+          child: Container(
+            padding: DashboardWidgetMetrics.paddingOf(context).copyWith(top: 0),
+            child: Column(
+              mainAxisSize: MainAxisSize.max,
+              mainAxisAlignment: MainAxisAlignment.end,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  height:
+                      globalState.measure.bodyMediumHeight *
+                          DashboardWidgetMetrics.textScaleOf(context) +
+                      2,
+                  child: ValueListenableBuilder(
+                    valueListenable: _memoryStateNotifier,
+                    builder: (_, memory, _) {
+                      final traffic = memory.total.traffic;
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.start,
+                        children: [
+                          Text(
+                            traffic.value,
+                            style: context.textTheme.bodyMedium?.toLight
+                                .adjustSize(1),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            traffic.unit,
+                            style: context.textTheme.bodyMedium?.toLight
+                                .adjustSize(1),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class MemoryDetailSheet extends StatefulWidget {
+  const MemoryDetailSheet({
+    super.key,
+    required this.snapshot,
+    required this.onRelease,
+  });
+
+  final ValueListenable<MemorySnapshot> snapshot;
+
+  /// Resolves to the bytes freed.
+  final Future<int> Function() onRelease;
+
+  @override
+  State<MemoryDetailSheet> createState() => _MemoryDetailSheetState();
+}
+
+class _MemoryDetailSheetState extends State<MemoryDetailSheet> {
+  static const _minReleaseFeedback = Duration(milliseconds: 500);
+
+  bool _isReleasing = false;
 
   Future<void> _handleRelease() async {
     if (_isReleasing) {
@@ -335,7 +233,7 @@ class _MemoryDetailSheetState extends ConsumerState<MemoryDetailSheet>
     var level = MessageLevel.success;
     try {
       final (freed, _) = await (
-        _release(),
+        widget.onRelease(),
         Future<void>.delayed(_minReleaseFeedback),
       ).wait;
       message = freed > 0
@@ -423,27 +321,31 @@ class _MemoryDetailSheetState extends ConsumerState<MemoryDetailSheet>
           ),
         ),
       ],
-      body: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 16).copyWith(
-          top: context.contentTopPadding,
-          bottom: 20 + context.bottomInset,
-        ),
-        children: [
-          _MemoryOverview(snapshot: _snapshot),
-          _MemorySection(
-            title: _snapshot.coreInProcess
-                ? appLocalizations.memoryAppShared
-                : appLocalizations.app,
-            bytes: _snapshot.app,
-            items: _appItems(appLocalizations, _snapshot),
-          ),
-          _MemorySection(
-            title: appLocalizations.core,
-            bytes: _snapshot.coreTotal,
-            contentKey: ValueKey(_snapshot.core != null),
-            items: _coreItems(appLocalizations, _snapshot),
-          ),
-        ],
+      body: ValueListenableBuilder<MemorySnapshot>(
+        valueListenable: widget.snapshot,
+        builder: (context, snapshot, _) {
+          return ListView(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 16,
+            ).copyWith(top: context.contentTopPadding, bottom: 20),
+            children: [
+              _MemoryOverview(snapshot: snapshot),
+              _MemorySection(
+                title: snapshot.coreInProcess
+                    ? appLocalizations.memoryAppShared
+                    : appLocalizations.app,
+                bytes: snapshot.app,
+                items: _appItems(appLocalizations, snapshot),
+              ),
+              _MemorySection(
+                title: appLocalizations.core,
+                bytes: snapshot.coreTotal,
+                contentKey: ValueKey(snapshot.core != null),
+                items: _coreItems(appLocalizations, snapshot),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -470,12 +372,14 @@ class _MemorySection extends StatelessWidget {
       children: [
         ListHeader(
           title: title,
-          trailing: Text(
-            bytes.traffic.show,
-            style: AppTextStyle.footnote
-                .of(context)
-                .copyWith(color: context.colorScheme.onSurfaceVariant),
-          ),
+          actions: [
+            Text(
+              bytes.traffic.show,
+              style: context.textTheme.bodySmall?.copyWith(
+                color: context.colorScheme.outline,
+              ),
+            ),
+          ],
         ),
         AnimatedSize(
           alignment: Alignment.topCenter,
@@ -483,7 +387,10 @@ class _MemorySection extends StatelessWidget {
           curve: Easing.standard,
           child: FadeThroughBox(
             alignment: Alignment.topCenter,
-            child: KeyedSubtree(key: contentKey, child: generateGroup(items)),
+            child: KeyedSubtree(
+              key: contentKey,
+              child: generateSectionV3(items: items),
+            ),
           ),
         ),
       ],
@@ -511,9 +418,9 @@ class _MemoryOverview extends StatelessWidget {
         children: [
           Text(
             appLocalizations.total,
-            style: AppTextStyle.headline
-                .of(context)
-                .copyWith(color: colorScheme.onSurfaceVariant),
+            style: context.textTheme.titleMedium?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: 4),
           Row(
@@ -522,16 +429,17 @@ class _MemoryOverview extends StatelessWidget {
             children: [
               Text(
                 total.value,
-                style: AppTextStyle.title1
-                    .of(context, emphasized: true)
-                    .copyWith(color: colorScheme.onSurface),
+                style: context.textTheme.headlineMedium?.copyWith(
+                  color: colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               const SizedBox(width: 6),
               Text(
                 total.unit,
-                style: AppTextStyle.headline
-                    .of(context)
-                    .copyWith(color: colorScheme.onSurfaceVariant),
+                style: context.textTheme.titleMedium?.copyWith(
+                  color: colorScheme.primary.opacity80,
+                ),
               ),
             ],
           ),
@@ -539,10 +447,7 @@ class _MemoryOverview extends StatelessWidget {
           _MemoryBar(
             segments: [
               (bytes: snapshot.app, color: colorScheme.primary),
-              (
-                bytes: snapshot.coreTotal,
-                color: DashboardColors.of(context).series2,
-              ),
+              (bytes: snapshot.coreTotal, color: colorScheme.tertiary),
             ],
           ),
           const SizedBox(height: 8),
@@ -550,9 +455,9 @@ class _MemoryOverview extends StatelessWidget {
             snapshot.coreInProcess
                 ? appLocalizations.memoryEstimateSharedDesc
                 : appLocalizations.memoryEstimateDesc,
-            style: AppTextStyle.footnote
-                .of(context)
-                .copyWith(color: colorScheme.onSurfaceVariant),
+            style: context.textTheme.bodySmall?.copyWith(
+              color: colorScheme.outline,
+            ),
           ),
         ],
       ),
@@ -570,16 +475,13 @@ class _MemoryBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final duration = context.motionDuration(commonDuration);
-    final total = segments.fold(
-      0,
-      (sum, segment) => sum + max(0, segment.bytes),
-    );
+    final isEmpty = segments.every((segment) => segment.bytes <= 0);
     return ClipRSuperellipse(
       borderRadius: AppRadius.full,
       child: SizedBox(
         height: 8,
-        child: total == 0
-            ? ColoredBox(color: DashboardColors.of(context).tone2)
+        child: isEmpty
+            ? ColoredBox(color: context.colorScheme.primary.opacity15)
             : Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -596,19 +498,12 @@ class _MemoryBar extends StatelessWidget {
                             ? _gap
                             : 0,
                       ),
-                    // Whole percents, so the drift between two polls does not
-                    // replay the animation every time.
                     TweenAnimationBuilder<double>(
-                      tween: Tween(
-                        end: (max(0, segment.bytes) * 100 / total)
-                            .roundToDouble(),
-                      ),
+                      tween: Tween(end: segment.bytes.toDouble()),
                       duration: duration,
                       curve: Easing.standard,
-                      builder: (_, percent, child) => Expanded(
-                        flex: (percent * 100).round(),
-                        child: child!,
-                      ),
+                      builder: (_, bytes, child) =>
+                          Expanded(flex: bytes.round(), child: child!),
                       child: ColoredBox(color: segment.color),
                     ),
                   ],
@@ -641,9 +536,9 @@ class _MemoryRow extends StatelessWidget {
           Flexible(child: Text(label)),
           Text(
             '${percent.fixed(decimals: 1)}%',
-            style: AppTextStyle.subheadline
-                .of(context)
-                .copyWith(color: context.colorScheme.onSurfaceVariant),
+            style: context.textTheme.bodyMedium?.copyWith(
+              color: context.colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),

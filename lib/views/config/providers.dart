@@ -1,19 +1,22 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
-import 'package:fl_clash/features/form/form.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/pages/editor.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class ClashProvidersView extends ConsumerStatefulWidget {
-  const ClashProvidersView({super.key});
+  const ClashProvidersView({super.key, required this.kind});
+
+  final ProviderKind kind;
 
   @override
   ConsumerState<ClashProvidersView> createState() => _ClashProvidersViewState();
@@ -22,17 +25,36 @@ class ClashProvidersView extends ConsumerStatefulWidget {
 class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
   late final ClashProvidersAction _providersAction;
 
+  ProviderKind get _kind => widget.kind;
+
   @override
   void initState() {
     super.initState();
     _providersAction = ref.read(clashProvidersActionProvider.notifier);
   }
 
+  String get _template => switch (_kind) {
+    ProviderKind.proxy => proxyProviderTemplate,
+    ProviderKind.rule => ruleProviderTemplate,
+  };
+
+  String _sectionLabel(BuildContext context) {
+    final appLocalizations = context.appLocalizations;
+    return switch (_kind) {
+      ProviderKind.proxy => appLocalizations.proxyProviders,
+      ProviderKind.rule => appLocalizations.ruleProviders,
+    };
+  }
+
+  List<ClashProvider> get _providers =>
+      ref.read(clashProvidersProvider(_kind)).value ?? [];
+
   Set<String> _reservedLabels({ClashProvider? except}) {
     return {
-      for (final item
-          in ref.read(clashProvidersProvider).value ?? const <ClashProvider>[])
+      for (final item in _providers)
         if (item.id != except?.id) item.label,
+      if (_kind == ProviderKind.proxy)
+        ...ref.read(profileProvidersProvider).keys,
     };
   }
 
@@ -52,11 +74,12 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
     return null;
   }
 
-  String _uniqueLabel(String name, [Set<String>? reserved]) {
+  String _uniqueLabel(String name) {
+    final reserved = _reservedLabels();
     return uniqueLabelFor(
       name,
-      fallback: context.appLocalizations.ruleProviders,
-      taken: (reserved ?? _reservedLabels()).contains,
+      fallback: _sectionLabel(context),
+      taken: reserved.contains,
     );
   }
 
@@ -64,59 +87,80 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
     ClashProvider provider, {
     ClashProvider? previous,
     List<int>? content,
-    bool refresh = false,
   }) async {
-    final saved = await globalState.loadingRun(
-      () => _providersAction.putProvider(
-        provider,
-        previous: previous,
-        content: content,
-        refresh: refresh,
-      ),
-      title: provider.label,
-      tag: LoadingTag.ruleProviders,
+    final appLocalizations = context.appLocalizations;
+    final conflicts = await _providersAction.putProvider(
+      provider,
+      previous: previous,
+      content: content,
     );
-    return saved != null;
+    if (conflicts.isEmpty) {
+      return true;
+    }
+    await dialogs.showMessage(
+      title: appLocalizations.tip,
+      message: TextSpan(
+        text: appLocalizations.providerRenameShadowed(
+          conflicts.map((profile) => profile.realLabel).join(', '),
+          provider.label,
+        ),
+      ),
+      cancelable: false,
+    );
+    return false;
+  }
+
+  /// The core has no default for behavior and refuses the whole config without
+  /// one, so a new rule set names it before anything is written.
+  Future<ClashProvider?> _resolveBehavior(ClashProvider provider) async {
+    if (provider.kind != ProviderKind.rule) {
+      return provider;
+    }
+    final res = await _showBehaviorDialog(provider);
+    return res == null ? null : provider.copyWith(behavior: res);
+  }
+
+  Future<RuleProviderBehavior?> _showBehaviorDialog(
+    ClashProvider provider,
+  ) async {
+    final options = provider.format.behaviors;
+    return dialogs.showCommonDialog<RuleProviderBehavior>(
+      child: OptionsDialog<RuleProviderBehavior>(
+        title: context.appLocalizations.behavior,
+        options: options,
+        textBuilder: (item) => item.name,
+        value: options.contains(provider.behavior)
+            ? provider.behavior!
+            : options.first,
+      ),
+    );
   }
 
   Future<void> _handleImportFromUrl() async {
     final appLocalizations = context.appLocalizations;
-    final res = await showNamedUrlsForm(
-      context,
+    final res = await dialogs.showNamedUrlInput(
       title: appLocalizations.importUrl,
       labelValidator: (value) => _validateLabel(value, optional: true),
       urlValidator: _validateProviderUrl,
-      existingUrls: {
-        for (final item
-            in ref.read(clashProvidersProvider).value ??
-                const <ClashProvider>[])
-          if (item.isRemote) item.url,
-      },
     );
     if (res == null || !mounted) {
       return;
     }
-    if (res case [final single]) {
-      final label = single.label.isNotEmpty
-          ? single.label
-          : _uniqueLabel(single.url.urlFileName.fileStem);
-      await _put(ClashProvider.create(label: label, url: single.url));
+    final fileName = res.url.urlFileName;
+    final label = res.label.isNotEmpty
+        ? res.label
+        : _uniqueLabel(fileName.fileStem);
+    final provider = await _resolveBehavior(
+      ClashProvider.create(
+        kind: _kind,
+        label: label,
+        url: res.url,
+      ).withFileFormat(fileName),
+    );
+    if (provider == null) {
       return;
     }
-    final reserved = _reservedLabels();
-    final providers = <ClashProvider>[];
-    for (final item in res) {
-      final label = _uniqueLabel(item.url.urlFileName.fileStem, reserved);
-      reserved.add(label);
-      providers.add(ClashProvider.create(label: label, url: item.url));
-    }
-    await globalState.batchRun(
-      providers,
-      _providersAction.putProvider,
-      label: (provider) => provider.url,
-      concurrency: maxConcurrentImports,
-      tag: LoadingTag.ruleProviders,
-    );
+    await _put(provider);
   }
 
   Future<void> _handleImportFromFile() async {
@@ -128,10 +172,16 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
     if (!mounted) {
       return;
     }
-    await _put(
-      ClashProvider.create(label: _uniqueLabel(file.name.fileStem)),
-      content: bytes,
+    final provider = await _resolveBehavior(
+      ClashProvider.create(
+        kind: _kind,
+        label: _uniqueLabel(file.name.fileStem),
+      ).withFileFormat(file.name),
     );
+    if (provider == null) {
+      return;
+    }
+    await _put(provider, content: bytes);
   }
 
   Future<String?> _showNameDialog({ClashProvider? except}) async {
@@ -150,7 +200,7 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
 
   Future<void> _handleEditorSave(
     String title,
-    EditorContent content, {
+    String content, {
     ClashProvider? provider,
   }) async {
     final appLocalizations = context.appLocalizations;
@@ -164,7 +214,7 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
     }
     if (_reservedLabels(except: provider).contains(label)) {
       unawaited(
-        dialogs.showAlert(
+        dialogs.showMessage(
           message: TextSpan(
             text: appLocalizations.existsTip(appLocalizations.name),
           ),
@@ -172,13 +222,16 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
       );
       return;
     }
-    final next =
-        provider?.copyWith(label: label) ?? ClashProvider.create(label: label);
-    if (!await _put(
-      next,
-      previous: provider,
-      content: await content.readBytes(),
-    )) {
+    var next = provider?.copyWith(label: label);
+    if (next == null) {
+      next = await _resolveBehavior(
+        ClashProvider.create(kind: _kind, label: label),
+      );
+      if (next == null) {
+        return;
+      }
+    }
+    if (!await _put(next, previous: provider, content: utf8.encode(content))) {
       return;
     }
     if (mounted) {
@@ -188,10 +241,16 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
 
   Future<bool> _handleEditorPop(
     String title,
-    EditorContent content, {
+    String content,
+    String raw, {
     ClashProvider? provider,
   }) async {
-    final res = await dialogs.showSaveChanges();
+    if (content == raw && title == (provider?.label ?? '')) {
+      return true;
+    }
+    final res = await dialogs.showMessage(
+      message: TextSpan(text: context.appLocalizations.saveChanges),
+    );
     if (res == null) {
       return false;
     }
@@ -203,20 +262,19 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
   }
 
   void _handleToEditor([ClashProvider? provider]) {
+    late final String raw;
     unawaited(
       BaseNavigator.push(
         context,
         EditorPage(
           titleEditable: true,
           title: provider?.label ?? '',
-          load: () async => provider == null
-              ? CodeForgeDocument.fromText('')
-              : openEditorFile(await provider.path),
+          load: () async => raw = (await provider?.content) ?? _template,
           schema: EditorSchema.provider,
           onSave: (_, title, content) =>
               _handleEditorSave(title, content, provider: provider),
           onPop: (_, title, content) =>
-              _handleEditorPop(title, content, provider: provider),
+              _handleEditorPop(title, content, raw, provider: provider),
         ),
       ),
     );
@@ -229,123 +287,131 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
         context,
         EditorPage(
           title: provider.label,
-          load: () async => provider.isTextContent
-              ? openEditorFile(await provider.path)
-              : CodeForgeDocument.fromText(
-                  await core.dumpRuleSet(await provider.path),
-                ),
+          load: () async => core.dumpRuleSet(await provider.path),
           schema: EditorSchema.provider,
         ),
       ),
     );
   }
 
-  Future<void> _handleEditOptions(ClashProvider provider) =>
-      _showClashProviderOptions(context, ref, provider);
+  Future<void> _handleEditOptions(ClashProvider provider) async {
+    final res = await dialogs.showCommonDialog<ClashProvider>(
+      child: _ProviderDialog(
+        provider: provider,
+        reservedLabels: _reservedLabels(except: provider),
+      ),
+    );
+    if (res == null) {
+      return;
+    }
+    await _put(res, previous: provider);
+  }
 
   Future<void> _handleDelete(ClashProvider provider) async {
     final appLocalizations = context.appLocalizations;
-    final users = await _providersAction.profilesUsing(provider);
-    final res = await dialogs.showMessage(
+    var users = await _providersAction.profilesUsing(provider);
+    if (users.isEmpty) {
+      final res = await dialogs.showMessage(
+        title: appLocalizations.tip,
+        message: TextSpan(text: appLocalizations.deleteTip(provider.label)),
+      );
+      if (res != true) {
+        return;
+      }
+      users = await _providersAction.delProvider(provider);
+      if (users.isEmpty) {
+        return;
+      }
+    }
+    await dialogs.showMessage(
       title: appLocalizations.tip,
       message: TextSpan(
-        text: users.isEmpty
-            ? appLocalizations.deleteTip(provider.label)
-            : appLocalizations.providerInUse(
-                provider.label,
-                users.map((profile) => profile.realLabel).join(', '),
-              ),
+        text: appLocalizations.providerInUse(
+          provider.label,
+          users.map((profile) => profile.realLabel).join(', '),
+        ),
       ),
-      destructive: true,
-      confirmText: appLocalizations.delete,
+      cancelable: false,
     );
-    if (res != true) {
-      return;
-    }
-    _providersAction.delProvider(provider);
   }
 
   bool _isEditable(ClashProvider provider) =>
       !provider.isRemote && provider.isTextContent;
 
-  List<CommonPopupMenuItem> _buildMenuItems(ClashProvider provider) {
+  Widget _buildItem(ClashProvider provider, int index, int length) {
     final appLocalizations = context.appLocalizations;
     final editable = _isEditable(provider);
-    return [
-      if (editable)
-        CommonPopupMenuItem(
-          glyph: AppGlyphs.compose,
-          label: appLocalizations.edit,
-          onPressed: () {
-            _handleToEditor(provider);
-          },
+    return ItemPositionProvider(
+      position: ItemPosition.get(index, length),
+      child: DecorationListItem(
+        contentPadding: const EdgeInsets.only(left: 16, right: 6),
+        title: Text(
+          provider.label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
-      if (!provider.isTextContent)
-        CommonPopupMenuItem(
-          glyph: AppGlyphs.eye,
-          label: appLocalizations.preview,
-          onPressed: () {
-            _handlePreview(provider);
-          },
+        subtitle: Text(
+          provider.isRemote ? provider.url : appLocalizations.file,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
-      if (provider.isRemote)
-        CommonPopupMenuItem(
-          glyph: AppGlyphs.sync,
-          label: appLocalizations.sync,
-          onPressed: () {
-            _put(provider, previous: provider, refresh: true);
-          },
-        ),
-      CommonPopupMenuItem(
-        glyph: AppGlyphs.settings,
-        label: appLocalizations.options,
-        onPressed: () {
-          _handleEditOptions(provider);
-        },
-      ),
-      CommonPopupMenuItem(
-        danger: true,
-        glyph: AppGlyphs.delete,
-        label: appLocalizations.delete,
-        onPressed: () {
-          _handleDelete(provider);
-        },
-      ),
-    ];
-  }
-
-  Widget _buildItem(List<ClashProvider> providers, int index) {
-    final provider = providers[index];
-    final editable = _isEditable(provider);
-    return SortableItem(
-      key: ValueKey(provider.id),
-      index: index,
-      child: ContextMenuRegion(
-        menuItems: _buildMenuItems(provider),
-        child: ItemPositionProvider(
-          position: ItemPosition.get(index, providers.length),
-          child: DecorationListItem(
-            contentPadding: const EdgeInsets.only(left: 16),
-            title: ChipTitle(
-              title: provider.label,
-              chip: provider.behavior.name,
-            ),
-            subtitle: Text(
-              provider.isRemote
-                  ? context.appLocalizations.remote
-                  : context.appLocalizations.local,
-              style: context.listCaptionStyle,
-            ),
-            trailing: _RuleSetUpdateTime(provider: provider),
-            onPressed: () {
-              if (editable) {
-                _handleToEditor(provider);
-              } else {
-                _handlePreview(provider);
-              }
-            },
+        trailing: CommonPopupBox(
+          popupBuilder: (_) => CommonPopupMenu(
+            items: [
+              if (editable)
+                CommonPopupMenuItem(
+                  glyph: AppGlyphs.compose,
+                  label: appLocalizations.edit,
+                  onPressed: () {
+                    _handleToEditor(provider);
+                  },
+                ),
+              if (!provider.isTextContent)
+                CommonPopupMenuItem(
+                  glyph: AppGlyphs.eye,
+                  label: appLocalizations.preview,
+                  onPressed: () {
+                    _handlePreview(provider);
+                  },
+                ),
+              CommonPopupMenuItem(
+                glyph: AppGlyphs.settings,
+                label: appLocalizations.options,
+                onPressed: () {
+                  _handleEditOptions(provider);
+                },
+              ),
+              CommonPopupMenuItem(
+                danger: true,
+                glyph: AppGlyphs.delete,
+                label: appLocalizations.delete,
+                onPressed: () {
+                  _handleDelete(provider);
+                },
+              ),
+            ],
           ),
+          targetBuilder: (open) {
+            return IconButton(
+              style: IconButton.styleFrom(
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.standard,
+              ),
+              tooltip: appLocalizations.more,
+              onPressed: () {
+                open();
+              },
+              icon: const GlyphIcon(AppGlyphs.more),
+            );
+          },
         ),
+        onPressed: () {
+          if (editable) {
+            _handleToEditor(provider);
+          } else {
+            _handleEditOptions(provider);
+          }
+        },
       ),
     );
   }
@@ -356,25 +422,33 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
       isLoading: loading,
       isEmpty: providers.isEmpty,
       nullStatus: NullStatus(
-        illustration: NullStatusIllustration.rules,
-        label: appLocalizations.nullTip(appLocalizations.ruleProviders),
+        illustration: switch (_kind) {
+          ProviderKind.proxy => NullStatusIllustration.proxies,
+          ProviderKind.rule => NullStatusIllustration.rules,
+        },
+        label: appLocalizations.nullTip(_sectionLabel(context)),
       ),
       child: ReorderableListView.builder(
-        padding: const EdgeInsets.all(16).copyWith(
-          top: context.contentTopPadding,
-          bottom: 16 + context.bottomInset,
-        ),
+        padding: const EdgeInsets.all(
+          16,
+        ).copyWith(top: context.contentTopPadding),
         buildDefaultDragHandles: false,
         itemCount: providers.length,
-        itemBuilder: (_, index) => _buildItem(providers, index),
+        itemBuilder: (_, index) {
+          return ReorderableDelayedDragStartListener(
+            key: ValueKey(providers[index].id),
+            index: index,
+            child: _buildItem(providers[index], index, providers.length),
+          );
+        },
         proxyDecorator: (_, index, animation) {
           return commonProxyDecorator(
-            _buildItem(providers, index),
+            _buildItem(providers[index], index, providers.length),
             index,
             animation,
           );
         },
-        onReorderItem: ref.read(clashProvidersProvider.notifier).order,
+        onReorderItem: ref.read(clashProvidersProvider(_kind).notifier).order,
       ),
     );
   }
@@ -382,18 +456,17 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
   @override
   Widget build(BuildContext context) {
     final appLocalizations = context.appLocalizations;
-    final state = ref.watch(clashProvidersProvider);
-    final providers = state.value ?? [];
+    final state = ref.watch(clashProvidersProvider(_kind));
     return CommonScaffold(
-      canSort: providers.length > 1,
-      isLoading: ref.watch(loadingProvider(LoadingTag.ruleProviders)),
       actions: [
         CommonPopupBox(
           targetBuilder: (open) {
-            return IconButton(
-              tooltip: appLocalizations.add,
-              onPressed: open,
-              icon: const GlyphIcon(AppGlyphs.addCircle),
+            return FilledButton.tonal(
+              onPressed: () {
+                final isMobile = ref.read(isMobileViewProvider);
+                open(offset: Offset(0, isMobile ? 0 : 20));
+              },
+              child: Text(appLocalizations.add),
             );
           },
           popupBuilder: (_) => CommonPopupMenu(
@@ -417,85 +490,10 @@ class _ClashProvidersViewState extends ConsumerState<ClashProvidersView> {
           ),
         ),
       ],
-      body: _buildContent(providers, loading: state.isLoading),
-      title: appLocalizations.ruleProviders,
+      body: _buildContent(state.value ?? [], loading: state.isLoading),
+      title: _sectionLabel(context),
     );
   }
-}
-
-/// The update time is the cached file's, so it is read again whenever a save or
-/// sync on this page finishes.
-class _RuleSetUpdateTime extends ConsumerStatefulWidget {
-  final ClashProvider provider;
-
-  const _RuleSetUpdateTime({required this.provider});
-
-  @override
-  ConsumerState<_RuleSetUpdateTime> createState() => _RuleSetUpdateTimeState();
-}
-
-class _RuleSetUpdateTimeState extends ConsumerState<_RuleSetUpdateTime> {
-  late Future<FileInfo?> _fileInfo = widget.provider.fileInfo;
-
-  @override
-  void didUpdateWidget(covariant _RuleSetUpdateTime oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.provider != widget.provider) {
-      _fileInfo = widget.provider.fileInfo;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    ref.listen(loadingProvider(LoadingTag.ruleProviders), (previous, next) {
-      if (previous == true && !next) {
-        setState(() {
-          _fileInfo = widget.provider.fileInfo;
-        });
-      }
-    });
-    // Inset here, not in the row, so the sort handle that replaces it sits flush.
-    return Padding(
-      padding: const EdgeInsetsDirectional.only(end: 16),
-      child: FutureBuilder<FileInfo?>(
-        future: _fileInfo,
-        builder: (context, snapshot) => LastUpdateTimeText(
-          lastUpdateDate: snapshot.data?.lastModified,
-          compact: true,
-          style: context.listCaptionStyle,
-        ),
-      ),
-    );
-  }
-}
-
-Future<void> _showClashProviderOptions(
-  BuildContext context,
-  WidgetRef ref,
-  ClashProvider provider,
-) async {
-  final res = await showFormSheet<ClashProvider>(
-    context: context,
-    builder: (_) => _ProviderForm(
-      provider: provider,
-      reservedLabels: {
-        for (final item
-            in ref.read(clashProvidersProvider).value ??
-                const <ClashProvider>[])
-          if (item.id != provider.id) item.label,
-      },
-    ),
-  );
-  if (res == null) {
-    return;
-  }
-  await globalState.loadingRun(
-    () => ref
-        .read(clashProvidersActionProvider.notifier)
-        .putProvider(res, previous: provider),
-    title: res.label,
-    tag: LoadingTag.ruleProviders,
-  );
 }
 
 String? _validateProviderUrl(String? value) {
@@ -511,30 +509,33 @@ String? _validateProviderUrl(String? value) {
   return null;
 }
 
-enum _ProviderField { label, url }
-
-class _ProviderForm extends StatefulWidget {
-  const _ProviderForm({required this.provider, required this.reservedLabels});
+class _ProviderDialog extends StatefulWidget {
+  const _ProviderDialog({required this.provider, required this.reservedLabels});
 
   final ClashProvider provider;
   final Set<String> reservedLabels;
 
   @override
-  State<_ProviderForm> createState() => _ProviderFormState();
+  State<_ProviderDialog> createState() => _ProviderDialogState();
 }
 
-class _ProviderFormState extends State<_ProviderForm> {
+class _ProviderDialogState extends State<_ProviderDialog> {
+  final _formKey = GlobalKey<FormState>();
   late final TextEditingController _labelController;
   late final TextEditingController _urlController;
-  bool _attempted = false;
+  late ClashProvider _draft;
 
   ClashProvider get _provider => widget.provider;
+
+  ProviderKind get _kind => _provider.kind;
 
   @override
   void initState() {
     super.initState();
     _labelController = TextEditingController(text: _provider.label);
-    _urlController = TextEditingController(text: _provider.url);
+    _urlController = TextEditingController(text: _provider.url)
+      ..addListener(_followUrlFormat);
+    _draft = _provider.withFormat(_provider.format ?? RuleProviderFormat.yaml);
   }
 
   @override
@@ -544,94 +545,158 @@ class _ProviderFormState extends State<_ProviderForm> {
     super.dispose();
   }
 
-  ({_ProviderField field, String message})? _issue() {
+  void _setFormat(RuleProviderFormat format) {
+    if (format == _draft.format) {
+      return;
+    }
+    setState(() {
+      _draft = _draft.withFormat(format);
+    });
+  }
+
+  /// A url whose extension names a format follows it, as an import does.
+  void _followUrlFormat() {
+    final format = ruleProviderFormatOf(_urlController.text.trim().urlFileName);
+    if (format != null) {
+      _setFormat(format);
+    }
+  }
+
+  String? _validateLabel(String? value) {
     final appLocalizations = context.appLocalizations;
-    final label = _labelController.text.trim();
+    final label = value?.trim() ?? '';
     if (label.isEmpty) {
-      return (
-        field: _ProviderField.label,
-        message: appLocalizations.emptyTip(appLocalizations.name),
-      );
+      return appLocalizations.emptyTip(appLocalizations.name);
     }
     if (widget.reservedLabels.contains(label)) {
-      return (
-        field: _ProviderField.label,
-        message: appLocalizations.existsTip(appLocalizations.name),
-      );
-    }
-    if (_provider.isRemote) {
-      if (_validateProviderUrl(_urlController.text) case final message?) {
-        return (field: _ProviderField.url, message: message);
-      }
+      return appLocalizations.existsTip(appLocalizations.name);
     }
     return null;
   }
 
-  void _handleChanged(String _) {
-    if (_attempted) {
-      setState(() {});
-    }
-  }
-
   void _handleSubmit() {
-    if (_issue() != null) {
-      setState(() {
-        _attempted = true;
-      });
+    if (_formKey.currentState?.validate() == false) {
       return;
     }
     Navigator.of(context).pop(
-      _provider.copyWith(
+      _draft.copyWith(
         label: _labelController.text.trim(),
         url: _urlController.text.trim(),
       ),
     );
   }
 
+  Future<void> _handleSelectFormat() async {
+    final res = await dialogs.showCommonDialog<RuleProviderFormat>(
+      context: context,
+      child: OptionsDialog<RuleProviderFormat>(
+        title: context.appLocalizations.format,
+        options: RuleProviderFormat.values,
+        textBuilder: (item) => item.name,
+        value: _draft.format!,
+      ),
+    );
+    if (res == null) {
+      return;
+    }
+    _setFormat(res);
+  }
+
+  Future<void> _handleSelectBehavior() async {
+    final res = await dialogs.showCommonDialog<RuleProviderBehavior>(
+      context: context,
+      child: OptionsDialog<RuleProviderBehavior>(
+        title: context.appLocalizations.behavior,
+        options: _draft.format.behaviors,
+        textBuilder: (item) => item.name,
+        value: _draft.behavior!,
+      ),
+    );
+    if (res == null) {
+      return;
+    }
+    setState(() {
+      _draft = _draft.copyWith(behavior: res);
+    });
+  }
+
+  Widget _buildField({
+    required TextEditingController controller,
+    required String label,
+    FormFieldValidator<String>? validator,
+    TextInputType? keyboardType,
+    List<TextInputFormatter>? inputFormatters,
+  }) {
+    return TextFormField(
+      controller: controller,
+      validator: validator,
+      keyboardType: keyboardType,
+      inputFormatters: inputFormatters,
+      decoration: InputDecoration(border: AppShape.input, labelText: label),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appLocalizations = context.appLocalizations;
-    final issue = _attempted ? _issue() : null;
-    return FormPage(
+    return CommonDialog(
       title: appLocalizations.options,
-      onSave: _handleSubmit,
-      error: issue?.message,
-      children: [
-        generateSection(
-          items: [
-            FormRow(
-              title: appLocalizations.name,
-              invalid: issue?.field == _ProviderField.label,
-              trailing: FormRowTextField(
-                controller: _labelController,
-                hintText: appLocalizations.required,
-                textInputAction: _provider.isRemote
-                    ? TextInputAction.next
-                    : TextInputAction.done,
-                inputFormatters: TextInputLimits.limit(TextInputLimits.name),
-                onChanged: _handleChanged,
-                onFieldSubmitted: _provider.isRemote
-                    ? null
-                    : (_) => _handleSubmit(),
-              ),
-            ),
-            if (_provider.isRemote)
-              FormRow(
-                title: appLocalizations.url,
-                invalid: issue?.field == _ProviderField.url,
-                trailing: FormRowTextField(
-                  controller: _urlController,
-                  hintText: appLocalizations.required,
-                  keyboardType: TextInputType.url,
-                  textInputAction: TextInputAction.done,
-                  autocorrect: false,
-                  onChanged: _handleChanged,
-                  onFieldSubmitted: (_) => _handleSubmit(),
-                ),
-              ),
-          ],
+      actions: [
+        TextButton(
+          onPressed: () {
+            Navigator.of(context).pop();
+          },
+          child: Text(appLocalizations.cancel),
+        ),
+        TextButton(
+          onPressed: _handleSubmit,
+          child: Text(appLocalizations.confirm),
         ),
       ],
+      child: Form(
+        key: _formKey,
+        autovalidateMode: AutovalidateMode.onUserInteraction,
+        child: Wrap(
+          runSpacing: 16,
+          children: [
+            _buildField(
+              controller: _labelController,
+              label: appLocalizations.name,
+              validator: _validateLabel,
+              inputFormatters: TextInputLimits.limit(TextInputLimits.name),
+            ),
+            if (_provider.isRemote)
+              _buildField(
+                controller: _urlController,
+                label: appLocalizations.url,
+                validator: _validateProviderUrl,
+                keyboardType: TextInputType.url,
+              ),
+            if (_kind == ProviderKind.rule) ...[
+              ListItem(
+                padding: EdgeInsets.zero,
+                title: Text(appLocalizations.format),
+                trailing: ElasticButton(
+                  child: FilledButton(
+                    onPressed: _handleSelectFormat,
+                    child: Text(_draft.format!.name),
+                  ),
+                ),
+              ),
+              ListItem(
+                padding: EdgeInsets.zero,
+                title: Text(appLocalizations.behavior),
+                trailing: ElasticButton(
+                  child: FilledButton(
+                    onPressed: _handleSelectBehavior,
+                    child: Text(_draft.behavior!.name),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

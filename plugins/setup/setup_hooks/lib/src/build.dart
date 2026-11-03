@@ -2,6 +2,7 @@ import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
 
 import 'build_cache.dart';
+import 'error.dart';
 import 'fingerprint.dart';
 import 'go_builder.dart';
 import 'options.dart';
@@ -11,17 +12,32 @@ import 'util.dart';
 
 final _log = Logger('setup_hooks');
 
+class AndroidToolchain {
+  const AndroidToolchain({
+    required this.clangDirectory,
+    required this.apiLevel,
+  });
+
+  final String clangDirectory;
+  final int apiLevel;
+
+  String clangFor(Target target) =>
+      p.join(clangDirectory, '${target.ndkTriple}$apiLevel-clang');
+}
+
 class BuildRequest {
   const BuildRequest({
     required this.rootDir,
     required this.target,
     this.harnessDir,
+    this.androidToolchain,
   });
 
   final String rootDir;
   final Target target;
 
   final String? harnessDir;
+  final AndroidToolchain? androidToolchain;
 }
 
 class BuildReport {
@@ -45,6 +61,9 @@ class BuildReport {
 Future<BuildReport> buildPlatform(BuildRequest request) async {
   final stopwatch = Stopwatch()..start();
   final target = request.target;
+  if (target.isLib && request.androidToolchain == null) {
+    throw BuildException('Android target $target needs an NDK toolchain');
+  }
   final rootDir = request.rootDir;
   final config = BuildConfig.load(rootDir: rootDir);
   final cache = BuildCache(rootDir: rootDir);
@@ -60,6 +79,7 @@ Future<BuildReport> buildPlatform(BuildRequest request) async {
     cache: cache,
     notice: notice,
     harnessInputs: harnessInputs,
+    androidToolchain: request.androidToolchain,
   ).build(target);
   if (!target.hasHelper) {
     _log.info('Done in ${stopwatch.elapsed}: ${core.primaryOutput}');

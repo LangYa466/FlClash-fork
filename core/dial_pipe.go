@@ -1,6 +1,6 @@
-//go:build windows
+//go:build windows && !(android && cgo)
 
-package core
+package main
 
 import (
 	"net"

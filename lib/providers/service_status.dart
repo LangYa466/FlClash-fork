@@ -1,4 +1,3 @@
-import 'package:fl_clash/common/mixin.dart';
 import 'package:fl_clash/common/service_probe.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -38,20 +37,11 @@ class ServiceStatus extends _$ServiceStatus
         target: ProbeAnswer(
           value: check,
           coreEpoch: check.coreEpoch,
-          routeVersion: check.routeVersion,
-          hits: check.hits,
+          picksVersion: check.picksVersion,
+          chains: check.chains,
         ),
     };
   }
-}
-
-/// How many of [enabledServiceTargets] the dashboard card has room for, which
-/// its sheet marks as shown there.
-@Riverpod(keepAlive: true)
-class ShownServiceCount extends _$ShownServiceCount
-    with AutoDisposeNotifierMixin {
-  @override
-  int build() => 2;
 }
 
 @riverpod

@@ -45,6 +45,7 @@ public class TrayPlugin: NSObject, FlutterPlugin {
             item.setImage(image, position: icon["position"] as? String ?? "leading")
         }
 
+        item.setToolTip(arguments["toolTip"] as? String ?? "")
         item.setTitle(arguments["title"] as? String ?? "")
 
         if let items = arguments["menu"] as? [[String: Any]] {

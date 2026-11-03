@@ -1,18 +1,25 @@
 part of 'database.dart';
 
 @DataClassName('RawCustomProxy')
+@TableIndex(
+  name: 'idx_custom_proxies_profile_order',
+  columns: {#profileId, #order},
+)
 class CustomProxies extends Table {
   @override
   String get tableName => 'custom_proxies';
 
   IntColumn get id => integer()();
 
+  IntColumn get profileId => integer().nullable().references(
+    Profiles,
+    #id,
+    onDelete: KeyAction.cascade,
+  )();
+
   TextColumn get definition => text().map(const JsonMapConverter())();
 
   TextColumn get order => text().nullable()();
-
-  TextColumn get emptyOptions =>
-      text().map(const StringSetConverter()).nullable()();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -23,25 +30,45 @@ class CustomProxiesDao extends DatabaseAccessor<Database>
     with _$CustomProxiesDaoMixin {
   CustomProxiesDao(super.attachedDatabase);
 
-  Selectable<CustomProxy> query() {
-    return customProxies.readable(
-      (row) => row.toCustomProxy(),
-      orderBy: [
-        (t) => OrderingTerm(expression: t.order, nulls: NullsOrder.last),
-      ],
+  Selectable<CustomProxy> query(int profileId) {
+    final stmt = customProxies.select();
+    stmt.where((row) => row.profileId.equals(profileId));
+    stmt.orderBy([
+      (t) => OrderingTerm(expression: t.order, nulls: NullsOrder.last),
+    ]);
+    return stmt.map((item) => item.toCustomProxy());
+  }
+
+  Selectable<int> count(int profileId) {
+    final stmt = customProxies.select();
+    stmt.where((row) => row.profileId.equals(profileId));
+    return stmt.count;
+  }
+
+  Future<int> order(
+    int profileId, {
+    required CustomProxy proxy,
+    required String order,
+  }) {
+    return customProxies.insertOnConflictUpdate(
+      proxy.toCompanion(profileId, order),
     );
   }
 
-  Future<int> order({required CustomProxy proxy, required String order}) {
-    return customProxies.insertOnConflictUpdate(proxy.toCompanion(order));
-  }
-
-  void setAllWithBatch(Batch batch, Iterable<CustomProxy> items) {
+  void setAllWithBatch(
+    int? profileId,
+    Batch batch,
+    Iterable<CustomProxy> items,
+  ) {
     final keys = indexing.generateNKeys(items.length);
     customProxies.setAll(
       batch,
-      items.mapIndexed((index, item) => item.toCompanion(keys[index])),
-      deleteFilter: (_) => const Constant(true),
+      items.mapIndexed(
+        (index, item) => item.toCompanion(profileId, keys[index]),
+      ),
+      deleteFilter: (row) => profileId == null
+          ? const Constant(true)
+          : row.profileId.equals(profileId),
       preDelete: true,
     );
   }
@@ -62,25 +89,22 @@ class CustomProxiesDao extends DatabaseAccessor<Database>
 
 extension RawCustomProxyExt on RawCustomProxy {
   CustomProxy toCustomProxy() {
-    final fields = ProxyField.values.asNameMap();
     return CustomProxy(
+      profileId: profileId,
       id: id,
       definition: definition,
       order: order,
-      emptyOptions: {
-        for (final name in emptyOptions ?? const {}) ?fields[name],
-      },
     );
   }
 }
 
 extension CustomProxiesCompanionExt on CustomProxy {
-  CustomProxiesCompanion toCompanion([String? order]) {
+  CustomProxiesCompanion toCompanion([int? profileId, String? order]) {
     return CustomProxiesCompanion.insert(
       id: Value(id),
+      profileId: Value(this.profileId ?? profileId),
       definition: definition,
       order: Value(order ?? this.order),
-      emptyOptions: Value({for (final field in emptyOptions) field.name}),
     );
   }
 }

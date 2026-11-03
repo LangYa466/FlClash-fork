@@ -7,20 +7,22 @@ import 'print.dart';
 import 'protocol.dart';
 import 'string.dart';
 
+typedef InstallConfigCallBack = void Function(String url);
+
 String? profileUrlFromQrCodes(Iterable<String?> values) {
   for (final value in values) {
     final text = value?.trim();
     if (text == null || text.isEmpty) {
       continue;
     }
-    if (text.isUrl || text.isShareLink) {
+    if (text.isUrl) {
       return text;
     }
     final uri = Uri.tryParse(text);
     if (uri == null || !protocolSchemes.contains(uri.scheme)) {
       continue;
     }
-    final url = _installConfigUrl(uri);
+    final url = _installConfigUrl(uri)?.trim();
     if (url != null && url.isUrl) {
       return url;
     }
@@ -29,11 +31,7 @@ String? profileUrlFromQrCodes(Iterable<String?> values) {
 }
 
 String? _installConfigUrl(Uri uri) {
-  if (uri.host != 'install-config') {
-    return null;
-  }
-  final url = uri.queryParameters['url']?.trim();
-  return url == null || url.isEmpty ? null : url;
+  return uri.host == 'install-config' ? uri.queryParameters['url'] : null;
 }
 
 class LinkManager {
@@ -60,6 +58,7 @@ class LinkManager {
   Future<void> initAppLinksListen(
     Function(String url) installConfigCallBack,
   ) async {
+    commonPrint.log('initAppLinksListen');
     destroy();
     subscription = uriLinkStream().listen((uri) {
       _handle(uri, installConfigCallBack);

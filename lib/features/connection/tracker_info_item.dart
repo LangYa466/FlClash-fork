@@ -1,8 +1,8 @@
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/config.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,22 +24,6 @@ String _endpointText(String ip, String port) {
     return '$ip:$port';
   }
   return ip;
-}
-
-void showTrackerInfoDetail(
-  BuildContext context,
-  TrackerInfo trackerInfo,
-  String title,
-) {
-  showInSheet<void>(
-    context,
-    builder: (_) {
-      return CommonScaffold(
-        body: TrackerInfoDetailView(trackerInfo: trackerInfo),
-        title: title,
-      );
-    },
-  );
 }
 
 class TrackerInfoItem extends ConsumerWidget {
@@ -67,22 +51,48 @@ class TrackerInfoItem extends ConsumerWidget {
       ),
     );
     return RecordListItem(
-      onTap: () => showTrackerInfoDetail(context, trackerInfo, detailTitle),
+      onTap: () {
+        showExtend(
+          context,
+          builder: (_) {
+            return CommonScaffold(
+              body: TrackerInfoDetailView(trackerInfo: trackerInfo),
+              title: detailTitle,
+            );
+          },
+        );
+      },
       header: _buildHeader(context),
-      body: _TrackerInfoBody(
-        trackerInfo: trackerInfo,
-        showIcon: showIcon,
-        onClickKeyword: onClickKeyword,
-      ),
+      body: _buildBody(showIcon: showIcon),
+    );
+  }
+
+  Widget _buildBody({required bool showIcon}) {
+    final process = trackerInfo.metadata.process;
+    final body = _TrackerInfoBody(
+      trackerInfo: trackerInfo,
+      onClickKeyword: onClickKeyword,
+    );
+    if (!showIcon || process.isEmpty) {
+      return body;
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 12,
+      children: [
+        GestureDetector(
+          onTap: () => onClickKeyword?.call(process),
+          child: PackageIcon(packageName: process, size: 40),
+        ),
+        Expanded(child: body),
+      ],
     );
   }
 
   Widget _buildHeader(BuildContext context) {
     final network = Text(
       trackerInfo.metadata.network.toUpperCase(),
-      style: AppTextStyle.caption1
-          .of(context, emphasized: true)
-          .copyWith(color: context.colorScheme.onSurfaceVariant),
+      style: const TextStyle(fontWeight: FontWeight.w500),
     );
     if (!isLive) {
       return RecordHeader(
@@ -118,7 +128,7 @@ class TrackerInfoItem extends ConsumerWidget {
         ],
       ),
       children: [
-        Text(trackerInfo.start.getLastUpdateTimeDesc(context, compact: true)),
+        Text(trackerInfo.start.getLastUpdateTimeDesc(context)),
         network,
       ],
     );
@@ -127,47 +137,9 @@ class TrackerInfoItem extends ConsumerWidget {
 
 class _TrackerInfoBody extends StatelessWidget {
   final TrackerInfo trackerInfo;
-  final bool showIcon;
   final Function(String)? onClickKeyword;
 
-  const _TrackerInfoBody({
-    required this.trackerInfo,
-    required this.showIcon,
-    this.onClickKeyword,
-  });
-
-  Widget _buildTitle(RecordTextStyles styles) {
-    final metadata = trackerInfo.metadata;
-    final title = Text.rich(
-      TextSpan(
-        children: [
-          TextSpan(
-            text: _endpointText(trackerInfo.title, metadata.destinationPort),
-            style: styles.title,
-          ),
-          if (metadata.host.isNotEmpty && metadata.destinationIP.isNotEmpty)
-            TextSpan(
-              text: '  ${metadata.destinationIP}',
-              style: styles.secondary,
-            ),
-        ],
-      ),
-    );
-    final process = metadata.process;
-    if (!showIcon || process.isEmpty) {
-      return title;
-    }
-    return Row(
-      spacing: 8,
-      children: [
-        GestureDetector(
-          onTap: () => onClickKeyword?.call(process),
-          child: PackageIcon(packageName: process, size: 24),
-        ),
-        Flexible(child: title),
-      ],
-    );
-  }
+  const _TrackerInfoBody({required this.trackerInfo, this.onClickKeyword});
 
   @override
   Widget build(BuildContext context) {
@@ -183,7 +155,24 @@ class _TrackerInfoBody extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 4,
       children: [
-        _buildTitle(styles),
+        Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: _endpointText(
+                  trackerInfo.title,
+                  metadata.destinationPort,
+                ),
+                style: styles.primary?.copyWith(fontWeight: FontWeight.w500),
+              ),
+              if (metadata.host.isNotEmpty && metadata.destinationIP.isNotEmpty)
+                TextSpan(
+                  text: '  ${metadata.destinationIP}',
+                  style: styles.muted,
+                ),
+            ],
+          ),
+        ),
         Wrap(
           spacing: 6,
           runSpacing: 4,
@@ -199,8 +188,8 @@ class _TrackerInfoBody extends StatelessWidget {
                   Flexible(
                     child: TonalChip(
                       label: chain,
-                      color: context.raisedSurfaceLevel.colorOf(colorScheme),
-                      foregroundColor: colorScheme.onSurfaceVariant,
+                      color: colorScheme.secondaryContainer,
+                      foregroundColor: colorScheme.onSecondaryContainer,
                       onPressed: () => onClickKeyword?.call(chain),
                     ),
                   ),
@@ -208,7 +197,7 @@ class _TrackerInfoBody extends StatelessWidget {
               ),
           ],
         ),
-        if (source.isNotEmpty) Text(source, style: styles.secondary),
+        if (source.isNotEmpty) Text(source, style: styles.muted),
       ],
     );
   }
@@ -254,12 +243,11 @@ class TrackerInfoDetailView extends StatelessWidget {
     final appLocalizations = context.appLocalizations;
     final metadata = trackerInfo.metadata;
     return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 16).copyWith(
-        bottom: 20 + context.bottomInset,
-        top: context.sectionsTopPadding,
-      ),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 16,
+      ).copyWith(bottom: 20, top: context.contentTopPadding),
       children: [
-        generateSection(
+        generateSectionV3(
           title: appLocalizations.basicInfo,
           items: _buildRows([
             (appLocalizations.creationTime, trackerInfo.start.showFull),
@@ -270,7 +258,7 @@ class TrackerInfoDetailView extends StatelessWidget {
             (appLocalizations.download, trackerInfo.download.traffic.show),
           ]),
         ),
-        generateSection(
+        generateSectionV3(
           title: appLocalizations.address,
           items: _buildRows([
             (appLocalizations.host, metadata.host),
@@ -290,7 +278,7 @@ class TrackerInfoDetailView extends StatelessWidget {
             (appLocalizations.remoteDestination, metadata.remoteDestination),
           ]),
         ),
-        generateSection(
+        generateSectionV3(
           title: appLocalizations.proxies,
           items: [
             ..._buildRows([

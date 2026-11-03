@@ -23,24 +23,18 @@ Profile? profile(Ref ref, int? profileId) {
 }
 
 @riverpod
-ExtendType extendType(Ref ref, int? profileId) {
+OverwriteType overwriteType(Ref ref, int? profileId) {
   return ref.watch(
     profileProvider(
       profileId,
-    ).select((state) => state?.extendType ?? ExtendType.standard),
+    ).select((state) => state?.overwriteType ?? OverwriteType.standard),
   );
 }
 
 @riverpod
 Future<ClashConfig> clashConfig(Ref ref, int profileId) async {
-  final type = ref.read(profileProvider(profileId))?.type;
-  if (type == ProfileType.custom) {
-    return const ClashConfig();
-  }
-  final outbounds = await ref
-      .read(coreHandlerProvider)
-      .getProfileOutbounds(profileId);
-  return clashConfigTask(outbounds);
+  final configMap = await ref.read(coreHandlerProvider).getConfig(profileId);
+  return clashConfigTask(configMap);
 }
 
 @riverpod
@@ -48,83 +42,64 @@ Future<SetupState> setupState(Ref ref, int? profileId) async {
   final profile = ref.watch(profileProvider(profileId));
   final scriptId = profile?.scriptId;
   final profileLastUpdateDate = profile?.lastUpdateDate?.millisecondsSinceEpoch;
-  final profileType = profile?.type ?? ProfileType.file;
-  final extendType = profile?.extendType ?? ExtendType.standard;
-  final overrides = profileType == ProfileType.custom
-      ? ref.watch(
-          patchClashConfigProvider.select(
-            (state) => (profile?.overrides ?? const ProfileOverrides())
-                .overAppTun(state.tunOverride, state.tunOverrideKeys),
-          ),
-        )
-      : ref.watch(
-          patchClashConfigProvider.select(
-            (state) => ProfileOverrides(
-              dns: state.dns,
-              dnsOverrideKeys: state.dnsOverrideKeys.intersection(
-                DnsOverrideKey.normalProfileKeys,
-              ),
-              tun: state.tunOverride,
-              tunOverrideKeys: state.tunOverrideKeys,
-            ),
-          ),
-        );
-  final allProfileProviders = ref.watch(profileProvidersProvider);
+  final overwriteType = profile?.overwriteType ?? OverwriteType.standard;
+  final dns = ref.watch(patchClashConfigProvider.select((state) => state.dns));
+  final dnsOverrideKeys = ref.watch(
+    patchClashConfigProvider.select((state) => state.dnsOverrideKeys),
+  );
+  final overrideDns = ref.watch(overrideDnsProvider);
+  final allProfileProviders = feature.customProviders
+      ? ref.watch(profileProvidersProvider)
+      : const <String, int>{};
+  List<CustomProxy> customProxies = [];
   List<ProxyGroup> proxyGroups = [];
   List<Rule> rules = [];
   List<Rule> addedRules = [];
   List<ClashProvider> clashProviders = [];
   Map<String, int> profileProviders = const {};
-  List<CustomProxy> appProxies = [];
-  Map<int, String> proxyDialers = const {};
   Script? script;
   if (profileId != null) {
-    if (profileType == ProfileType.custom) {
-      rules = await database.rulesDao.queryProfileRules(profileId).get();
-      proxyGroups = await database.proxyGroupsDao.query(profileId).get();
-      clashProviders = await database.clashProvidersDao.query().get();
-      profileProviders = allProfileProviders;
-      appProxies = await database.customProxiesDao.query().get();
-      proxyDialers = {
-        for (final dialer
-            in await database.proxyDialersDao.query(profileId).get())
-          dialer.proxyId: dialer.target,
-      };
-    } else if (extendType == ExtendType.standard) {
+    if (overwriteType == OverwriteType.standard) {
       addedRules = await database.rulesDao.queryAddedRules(profileId).get();
-    } else if (extendType == ExtendType.script) {
+    } else if (overwriteType == OverwriteType.script) {
       script = scriptId == null
           ? null
           : await database.scriptsDao.get(scriptId).getSingleOrNull();
+    } else {
+      rules = await database.rulesDao.queryProfileCustomRules(profileId).get();
+      proxyGroups = await database.proxyGroupsDao.query(profileId).get();
+      if (feature.customProxies) {
+        customProxies = await database.customProxiesDao.query(profileId).get();
+      }
+      if (feature.customProviders) {
+        clashProviders = await database.clashProvidersDao.queryAll().get();
+        profileProviders = allProfileProviders;
+      }
     }
   }
   return SetupState(
     clashProviders: clashProviders,
     profileProviders: profileProviders,
-    appProxies: appProxies,
-    proxyDialers: proxyDialers,
     rules: rules,
     proxyGroups: proxyGroups,
+    customProxies: customProxies,
     profileId: profileId,
     profileLastUpdateDate: profileLastUpdateDate,
-    profileType: profileType,
-    extendType: extendType,
+    overwriteType: overwriteType,
     addedRules: addedRules,
     script: script,
-    overrides: overrides,
-    matchTarget:
-        profileType != ProfileType.custom && extendType == ExtendType.standard
+    overrideDns: overrideDns,
+    dns: dns,
+    dnsOverrideKeys: dnsOverrideKeys,
+    matchTarget: overwriteType == OverwriteType.standard
         ? profile?.matchTarget
         : null,
   );
 }
 
-/// Subscription profiles double as proxy providers for custom profiles.
+/// Every profile doubles as a proxy provider another profile's groups can use.
 @riverpod
 Map<String, int> profileProviders(Ref ref) {
   final profiles = ref.watch(profilesProvider);
-  return {
-    for (final profile in profiles)
-      if (profile.type != ProfileType.custom) profile.realLabel: profile.id,
-  };
+  return {for (final profile in profiles) profile.realLabel: profile.id};
 }
