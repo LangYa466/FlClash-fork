@@ -7,6 +7,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create from this run, for example v0.9.3'
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -314,7 +319,10 @@ jobs:
 
   build:
     # Releases publish where the release links point: this fork.
-    if: github.repository == 'LangYa466/FlClash-fork' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      github.repository == 'LangYa466/FlClash-fork' &&
+      ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v')))
     needs: [ dart, plugins, go, android, rust, windows-helper-test ]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -459,7 +467,7 @@ jobs:
         shell: bash
         env:
           IS_STABLE: ${{ env.IS_STABLE }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           target=()
           if [[ "$IS_STABLE" == 'true' ]]; then
@@ -471,7 +479,7 @@ jobs:
 
       - name: Patch release.md
         run: |
-          version=$(echo "${{ github.ref_name }}" | sed 's/^v//')
+          version=$(echo "${{ inputs.tag || github.ref_name }}" | sed 's/^v//')
           sed "s|VERSION|$version|g" ./.github/release_template.md >> release.md
 
       - name: Generate sha256
@@ -486,3 +494,5 @@ jobs:
         with:
           files: ./dist/*
           body_path: './release.md'
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
