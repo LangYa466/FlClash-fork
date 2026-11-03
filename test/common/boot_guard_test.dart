@@ -36,9 +36,7 @@ void main() {
       final store = _RecordStore();
       final guard = _guard(store);
 
-      final decision = await guard.evaluate(
-        profileId: 7,
-      );
+      final decision = await guard.evaluate(profileId: 7);
 
       expect(decision.recovery, BootRecovery.none);
       expect(store.record?.stage, BootStage.starting);
@@ -57,9 +55,7 @@ void main() {
       );
     final guard = _guard(store);
 
-    final decision = await guard.evaluate(
-      profileId: 7,
-    );
+    final decision = await guard.evaluate(profileId: 7);
 
     expect(decision.recovery, BootRecovery.skipAutoSetup);
     expect(store.record?.failureCount, 1);
@@ -77,9 +73,7 @@ void main() {
       );
     final guard = _guard(store);
 
-    final decision = await guard.evaluate(
-      profileId: 7,
-    );
+    final decision = await guard.evaluate(profileId: 7);
 
     expect(decision.recovery, BootRecovery.clearProfile);
     expect(store.record?.profileId, isNull);
@@ -109,9 +103,7 @@ void main() {
       ),
       now: 6000,
     );
-    final decision = await next.evaluate(
-      profileId: 7,
-    );
+    final decision = await next.evaluate(profileId: 7);
 
     expect(decision.recovery, BootRecovery.skipAutoSetup);
     expect(store.record?.handledExitAt, 4000);
@@ -185,9 +177,7 @@ void main() {
       );
     final guard = _guard(store, supported: false);
 
-    final decision = await guard.evaluate(
-      profileId: 7,
-    );
+    final decision = await guard.evaluate(profileId: 7);
     await guard.markRunning();
     await guard.markClosed();
 
