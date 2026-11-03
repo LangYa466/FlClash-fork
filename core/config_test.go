@@ -1,11 +1,9 @@
-package core
+package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -18,7 +16,6 @@ import (
 	"github.com/metacubex/mihomo/component/updater"
 	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/hub/route"
 	authStore "github.com/metacubex/mihomo/listener/auth"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
@@ -104,26 +101,11 @@ func TestUpdateConfigRejectsAnUnappliedConfig(t *testing.T) {
 	}
 }
 
-// The host reads updateConfig's result as a message, so the failure has to
-// arrive as one rather than as the envelope's error.
-func TestUpdateConfigMethodReportsAnUnappliedConfigAsAMessage(t *testing.T) {
+func TestHandleUpdateConfigReportsAnUnappliedConfig(t *testing.T) {
 	withCurrentConfig(t, nil)
 
-	frame := handleMethodCall(&MethodCall{
-		ID:        "1",
-		Method:    updateConfigMethod,
-		Arguments: json.RawMessage(`{}`),
-	})
-
-	var envelope struct {
-		Result string       `json:"result"`
-		Error  *MethodError `json:"error"`
-	}
-	if err := json.Unmarshal(frame, &envelope); err != nil {
-		t.Fatalf("response is not valid JSON: %v", err)
-	}
-	if envelope.Error != nil || envelope.Result != errConfigNotApplied.Error() {
-		t.Errorf("envelope = %+v, want the message %q as the result", envelope, errConfigNotApplied)
+	if message := handleUpdateConfig(&UpdateParams{}); message == "" {
+		t.Error("handleUpdateConfig reported success without an applied config")
 	}
 }
 
@@ -244,27 +226,6 @@ func TestUpdateConfigPatchesOnlyTheTunFieldsItWasGiven(t *testing.T) {
 	}
 }
 
-func TestUpdateConfigDecodesTheTunSettingsTheHostSends(t *testing.T) {
-	withCurrentConfig(t, &config.Config{General: &config.General{}, Controller: &config.Controller{}})
-	currentConfig.General.Tun.MTU = 1400
-	var params UpdateParams
-	payload := `{"tun":{"enable":true,"device":"FlClash","stack":"gvisor","auto-route":true,"mtu":9000}}`
-	if err := json.Unmarshal([]byte(payload), &params); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-
-	if err := updateConfig(&params); err != nil {
-		t.Fatalf("updateConfig error: %v", err)
-	}
-	tun := currentConfig.General.Tun
-	if !tun.Enable || !tun.AutoRoute || tun.Device != "FlClash" || tun.Stack != constant.TunGvisor {
-		t.Errorf("Enable = %v, AutoRoute = %v, Device = %q, Stack = %v", tun.Enable, tun.AutoRoute, tun.Device, tun.Stack)
-	}
-	if tun.MTU != 1400 {
-		t.Errorf("MTU = %d, want the profile's value kept", tun.MTU)
-	}
-}
-
 func TestUpdateConfigLeavesTheControllerAloneWhenTheAddressIsUnchanged(t *testing.T) {
 	withCurrentConfig(t, &config.Config{
 		General:    &config.General{},
@@ -278,63 +239,6 @@ func TestUpdateConfigLeavesTheControllerAloneWhenTheAddressIsUnchanged(t *testin
 
 	if currentConfig.Controller.Secret != "s3cret" {
 		t.Errorf("Secret = %q, want the controller left untouched", currentConfig.Controller.Secret)
-	}
-}
-
-func TestUpdateConfigReplacesTheSecretTheProfileCarried(t *testing.T) {
-	withCurrentConfig(t, &config.Config{
-		General:    &config.General{},
-		Controller: &config.Controller{Secret: "from-the-profile"},
-	})
-	closed, secret := "", "generated"
-
-	if err := updateConfig(&UpdateParams{ExternalController: &closed, Secret: &secret}); err != nil {
-		t.Fatalf("updateConfig error: %v", err)
-	}
-
-	if currentConfig.Controller.Secret != secret {
-		t.Errorf("Secret = %q, want %q", currentConfig.Controller.Secret, secret)
-	}
-}
-
-func TestUpdateConfigServesTheControllerBehindTheSecretItWasGiven(t *testing.T) {
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve a port: %v", err)
-	}
-	address := probe.Addr().String()
-	_ = probe.Close()
-	withCurrentConfig(t, &config.Config{General: &config.General{}, Controller: &config.Controller{}})
-	t.Cleanup(func() { route.ReCreateServer(&route.Config{}) })
-	secret := "generated"
-
-	if err := updateConfig(&UpdateParams{ExternalController: &address, Secret: &secret}); err != nil {
-		t.Fatalf("updateConfig error: %v", err)
-	}
-
-	status := func(authorization string) int {
-		request, _ := http.NewRequest(http.MethodGet, "http://"+address+"/version", nil)
-		if authorization != "" {
-			request.Header.Set("Authorization", authorization)
-		}
-		deadline := time.Now().Add(3 * time.Second)
-		for {
-			response, err := http.DefaultClient.Do(request)
-			if err == nil {
-				_ = response.Body.Close()
-				return response.StatusCode
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the controller never came up: %v", err)
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-	if got := status(""); got != http.StatusUnauthorized {
-		t.Errorf("without the secret: status %d, want %d", got, http.StatusUnauthorized)
-	}
-	if got := status("Bearer " + secret); got != http.StatusOK {
-		t.Errorf("with the secret: status %d, want %d", got, http.StatusOK)
 	}
 }
 
@@ -409,8 +313,10 @@ func TestSyncGeoUpdaterIgnoresUnchangedParameters(t *testing.T) {
 }
 
 // A profile apply reloads the setting out of config.yaml, so the core can end
-// up with the updater running while the flag reads off, and syncGeoUpdater sees
-// nothing to change because the flag already matches what the app sends next.
+// up with the updater running while the flag reads off. Reconciling only when
+// the flag says on left that goroutine downloading GEO databases forever: the
+// flag already matched what the app sent next, so syncGeoUpdater saw nothing to
+// change and never cancelled it.
 func TestReconcileGeoUpdaterStopsAnUpdaterTheProfileTurnedOff(t *testing.T) {
 	calls := stubGeoUpdater(t)
 
@@ -469,24 +375,24 @@ func TestDelayTestSlotsBoundConcurrency(t *testing.T) {
 	}
 
 	for i := 0; i < delayTestConcurrency; i++ {
-		if !delayTestSlots.acquire(context.Background()) {
+		if !acquireDelayTestSlot(context.Background()) {
 			t.Fatalf("slot %d was refused while the semaphore still had room", i)
 		}
 	}
 
 	blocked := make(chan struct{})
 	go func() {
-		delayTestSlots.acquire(context.Background())
+		acquireDelayTestSlot(context.Background())
 		close(blocked)
 	}()
 
 	select {
 	case <-blocked:
-		t.Fatal("delayTestSlots handed out more slots than the configured concurrency")
+		t.Fatal("acquireDelayTestSlot handed out more slots than the configured concurrency")
 	case <-time.After(20 * time.Millisecond):
 	}
 
-	delayTestSlots.release()
+	releaseDelayTestSlot()
 	select {
 	case <-blocked:
 	case <-time.After(time.Second):
@@ -494,12 +400,12 @@ func TestDelayTestSlotsBoundConcurrency(t *testing.T) {
 	}
 
 	for i := 0; i < delayTestConcurrency; i++ {
-		delayTestSlots.release()
+		releaseDelayTestSlot()
 	}
 }
 
 func TestHandleUpdateGeoDataRejectsAnUnknownResource(t *testing.T) {
-	if err := handleUpdateGeoData("NOPE"); err == nil {
+	if message := handleUpdateGeoData("NOPE"); message == "" {
 		t.Error("an unknown geo resource reported success and silently did nothing")
 	}
 	if _, exists := geoResources["MMDB"]; !exists {
@@ -544,8 +450,8 @@ func TestTestDelayRejectsAnUnknownProxyWithoutWaitingForASlot(t *testing.T) {
 
 	select {
 	case delay := <-done:
-		if delay.Value != delayFailed {
-			t.Errorf("value = %d, want %d", delay.Value, delayFailed)
+		if delay.Value != -1 {
+			t.Errorf("value = %d, want -1", delay.Value)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("an unknown proxy queued behind a saturated delay-test semaphore")
@@ -586,8 +492,8 @@ func TestHandleUpdateGeoDataRunsOneUpdatePerResource(t *testing.T) {
 		},
 	})
 
-	if err := handleUpdateGeoData(resource); err != nil {
-		t.Fatalf("handleUpdateGeoData = %v, want no error", err)
+	if message := handleUpdateGeoData(resource); message != "" {
+		t.Fatalf("handleUpdateGeoData = %q, want no error", message)
 	}
 	select {
 	case <-started:
@@ -595,7 +501,7 @@ func TestHandleUpdateGeoDataRunsOneUpdatePerResource(t *testing.T) {
 		t.Fatal("the first update never started")
 	}
 
-	if err := handleUpdateGeoData(resource); err == nil {
+	if message := handleUpdateGeoData(resource); message == "" {
 		t.Fatal("the duplicate request reported no error while an update was already in flight")
 	}
 	select {
@@ -632,7 +538,7 @@ func TestGeoUpdateHookBlocksAManualUpdateOfTheSameResource(t *testing.T) {
 
 	updater.GeoUpdateHook(resource, true, false, nil)
 
-	if err := handleUpdateGeoData(resource); err == nil {
+	if message := handleUpdateGeoData(resource); message == "" {
 		t.Fatal("handleUpdateGeoData reported no error while the hook already claimed this resource")
 	}
 	select {
@@ -668,8 +574,8 @@ func TestGeoUpdateHookDoesNotReleaseAManualClaim(t *testing.T) {
 		},
 	})
 
-	if err := handleUpdateGeoData(resource); err != nil {
-		t.Fatalf("handleUpdateGeoData = %v, want no error", err)
+	if message := handleUpdateGeoData(resource); message != "" {
+		t.Fatalf("handleUpdateGeoData = %q, want no error", message)
 	}
 	select {
 	case <-started:
@@ -680,7 +586,7 @@ func TestGeoUpdateHookDoesNotReleaseAManualClaim(t *testing.T) {
 	updater.GeoUpdateHook(resource, true, false, nil)
 	updater.GeoUpdateHook(resource, false, false, nil)
 
-	if err := handleUpdateGeoData(resource); err == nil {
+	if message := handleUpdateGeoData(resource); message == "" {
 		t.Fatal("the duplicate request reported no error while the manual claim was still held")
 	}
 	select {
@@ -791,10 +697,10 @@ func withSetupConfig(t *testing.T, apply func(*SetupParams) error) {
 func TestHandleSetupConfigKeepsTheListenerWhenTheProfileFails(t *testing.T) {
 	withSetupConfig(t, func(*SetupParams) error { return errors.New("bad profile") })
 
-	err := handleSetupConfig(defaultSetupParams())
+	got := handleSetupConfig(defaultSetupParams())
 
-	if err == nil || err.Error() != "bad profile" {
-		t.Fatalf("handleSetupConfig = %v, want the apply error", err)
+	if got != "bad profile" {
+		t.Fatalf("handleSetupConfig = %q, want the apply error", got)
 	}
 	if !isRunning.Load() {
 		t.Error("a failed apply stopped the listeners")
@@ -804,15 +710,17 @@ func TestHandleSetupConfigKeepsTheListenerWhenTheProfileFails(t *testing.T) {
 func TestHandleSetupConfigLeavesTheListenerAloneOnSuccess(t *testing.T) {
 	withSetupConfig(t, func(*SetupParams) error { return nil })
 
-	if err := handleSetupConfig(defaultSetupParams()); err != nil {
-		t.Fatalf("handleSetupConfig = %v, want no error", err)
+	got := handleSetupConfig(defaultSetupParams())
+
+	if got != "" {
+		t.Fatalf("handleSetupConfig = %q, want no error", got)
 	}
 	if !isRunning.Load() {
 		t.Error("a successful apply stopped the listeners")
 	}
 }
 
-func TestSlotsAcquireGivesUpOnTheDeadline(t *testing.T) {
+func TestAcquireDelayTestSlotGivesUpOnTheDeadline(t *testing.T) {
 	for i := 0; i < delayTestConcurrency; i++ {
 		delayTestSlots <- struct{}{}
 	}
@@ -826,25 +734,25 @@ func TestSlotsAcquireGivesUpOnTheDeadline(t *testing.T) {
 	defer cancel()
 
 	refused := make(chan bool, 1)
-	go func() { refused <- delayTestSlots.acquire(ctx) }()
+	go func() { refused <- acquireDelayTestSlot(ctx) }()
 
 	select {
 	case granted := <-refused:
 		if granted {
-			t.Fatal("acquire handed out a slot the semaphore did not have")
+			t.Fatal("acquireDelayTestSlot handed out a slot the semaphore did not have")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("acquire ignored the deadline and kept queueing")
+		t.Fatal("acquireDelayTestSlot ignored the deadline and kept queueing")
 	}
 }
 
-func TestTimeoutFromMillisFallsBackWhenUnset(t *testing.T) {
-	if got := timeoutFromMillis(250, defaultDelayTestTimeout); got != 250*time.Millisecond {
-		t.Errorf("timeoutFromMillis(250) = %v, want 250ms", got)
+func TestDelayTestTimeoutFallsBackWhenUnset(t *testing.T) {
+	if got := delayTestTimeout(250); got != 250*time.Millisecond {
+		t.Errorf("delayTestTimeout(250) = %v, want 250ms", got)
 	}
 	for _, unset := range []int64{0, -1} {
-		if got := timeoutFromMillis(unset, defaultDelayTestTimeout); got != defaultDelayTestTimeout {
-			t.Errorf("timeoutFromMillis(%d) = %v, want the default %v", unset, got, defaultDelayTestTimeout)
+		if got := delayTestTimeout(unset); got != defaultDelayTestTimeout {
+			t.Errorf("delayTestTimeout(%d) = %v, want the default %v", unset, got, defaultDelayTestTimeout)
 		}
 	}
 }
@@ -886,8 +794,8 @@ func TestTestDelayQueuesWhenTheTimeoutIsUnset(t *testing.T) {
 	delay := <-done
 	delayTestSlots <- struct{}{}
 
-	if delay.Value != delayFailed {
-		t.Errorf("value = %d, want %d for a probe against a refused port", delay.Value, delayFailed)
+	if delay.Value != -1 {
+		t.Errorf("value = %d, want -1 for a probe against a refused port", delay.Value)
 	}
 }
 
@@ -928,11 +836,11 @@ func blackHoleServer(t *testing.T) net.Addr {
 	return listener.Addr()
 }
 
-// Queueing for a slot and probing the node must not share one deadline: a node
-// that waited out most of its timeout behind a saturated semaphore would have
-// only the remainder to connect in and report Timeout while perfectly healthy -
-// which is what a bulk test of a large subscription does to everything at the
-// back of the queue.
+// Queueing for a slot and probing the node must not share one deadline. They
+// used to, so a node that waited out most of its timeout behind a saturated
+// semaphore had only the remainder to connect in and reported Timeout while it
+// was perfectly healthy - which is what a bulk test of a large subscription
+// does to everything at the back of the queue.
 func TestTestDelayDoesNotSpendTheProbeBudgetQueueing(t *testing.T) {
 	const (
 		timeout  = 200 * time.Millisecond
@@ -978,9 +886,6 @@ func TestTestDelayDoesNotSpendTheProbeBudgetQueueing(t *testing.T) {
 				elapsed,
 				queueFor+timeout,
 			)
-		}
-		if delay.Value != delayTimedOut {
-			t.Errorf("value = %d, want %d for a probe that waited out its deadline", delay.Value, delayTimedOut)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("handleTestDelay never returned")

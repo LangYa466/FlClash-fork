@@ -5,8 +5,8 @@ import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:test/test.dart';
 
-ProfileOverrides _decode(Map<String, Object?> json) {
-  return ProfileOverrides.fromJson(
+PatchClashConfig _decode(Map<String, Object?> json) {
+  return PatchClashConfig.fromJson(
     jsonDecode(jsonEncode(json)) as Map<String, Object?>,
   );
 }
@@ -24,7 +24,7 @@ void main() {
     });
   });
 
-  test('the model defaults match the core\'s', () {
+  test('the model defaults match the ones the core parses', () {
     final source = File('core/Clash.Meta/config/config.go').readAsStringSync();
     final body = RegExp(
       r'NTP: RawNTP\{([^}]*)\}',
@@ -57,9 +57,9 @@ void main() {
     });
   });
 
-  group('ProfileOverrides.ntpOverrideKeys', () {
+  group('PatchClashConfig.ntpOverrideKeys', () {
     test('round-trips as key paths', () {
-      const config = ProfileOverrides(
+      const config = PatchClashConfig(
         ntpOverrideKeys: {
           NtpOverrideKey.writeToSystem,
           NtpOverrideKey.dialerProxy,
@@ -72,11 +72,11 @@ void main() {
     });
 
     test('a fresh config overrides nothing', () {
-      expect(const ProfileOverrides().ntpOverrideKeys, isEmpty);
+      expect(const PatchClashConfig().ntpOverrideKeys, isEmpty);
     });
 
     test('a config saved before the section keeps the empty set', () {
-      final json = const ProfileOverrides().toJson()
+      final json = const PatchClashConfig().toJson()
         ..remove('ntp')
         ..remove('ntp-override-keys');
       final config = _decode(json);
@@ -86,14 +86,12 @@ void main() {
     });
 
     test('a key this build does not know is dropped, not the config', () {
-      final json = const ProfileOverrides(
-        ntp: Ntp(server: 'time.cloudflare.com'),
-      ).toJson();
+      final json = const PatchClashConfig(mixedPort: 7899).toJson();
       json['ntp-override-keys'] = ['server', 'key-from-a-newer-build'];
       final config = _decode(json);
 
       expect(config.ntpOverrideKeys, {NtpOverrideKey.server});
-      expect(config.ntp.server, 'time.cloudflare.com');
+      expect(config.mixedPort, 7899);
     });
   });
 

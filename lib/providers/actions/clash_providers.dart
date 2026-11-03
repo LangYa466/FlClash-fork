@@ -5,188 +5,120 @@ class ClashProvidersAction extends _$ClashProvidersAction {
   @override
   void build() {}
 
-  CoreController get _core => ref.read(coreHandlerProvider);
-
-  Future<ClashProvider> putProvider(
+  /// Returns who blocks a rename: users whose subscription has the new label.
+  Future<List<Profile>> putProvider(
     ClashProvider provider, {
     ClashProvider? previous,
     List<int>? content,
-    bool refresh = false,
   }) async {
-    final before = await _stored(provider.id);
-    final download =
-        provider.isRemote &&
-        (refresh || provider.fileName != previous?.fileName);
-    final compiled = switch (content) {
-      final content? => await _compileContent(provider, content),
-      null when download => await _compile(provider, download: true),
-      null => provider,
-    };
-    final latest = before == null ? null : await _stored(provider.id);
-    if (before != null &&
-        (latest == null || latest.fileName != before.fileName)) {
-      if (latest?.fileName != compiled.fileName) {
-        unawaited(_clearCache(compiled));
+    var renameIn = const <Profile>[];
+    if (previous != null && previous.label != provider.label) {
+      renameIn = await profilesUsing(previous);
+      final conflicts = await profilesDefining(
+        provider.kind,
+        provider.label,
+        renameIn,
+      );
+      if (conflicts.isNotEmpty) {
+        return conflicts;
       }
-      return latest ?? compiled;
     }
-    final next = switch ((before, latest)) {
-      (final before?, final latest?) => latest.copyWith(
-        label: compiled.label == before.label ? latest.label : compiled.label,
-        url: compiled.url,
-        behavior: compiled.behavior,
-        format: compiled.format,
-      ),
-      _ => compiled,
-    };
-    ref.read(clashProvidersProvider.notifier).put(next);
-    if (previous != null && previous.fileName != next.fileName) {
+    if (content != null) {
+      await provider.saveContent(content);
+    }
+    ref
+        .read(clashProvidersProvider(provider.kind).notifier)
+        .put(provider, renameIn: renameIn.map((profile) => profile.id));
+    if (previous != null && previous.fileName != provider.fileName) {
       unawaited(_clearCache(previous));
     }
-    final reread = content != null || download;
-    if (reread && next == before) {
-      unawaited(_reloadIfReferenced(next));
-    } else {
-      unawaited(
-        applyIfReferenced(ProviderKind.rule, {
-          next.label,
-          ?previous?.label,
-        }, force: reread),
-      );
-    }
-    return next;
-  }
-
-  /// Downloads outlast edits, so a result lands on the set as it is by then.
-  Future<ClashProvider?> _stored(int id) async {
-    final rows =
-        ref.read(clashProvidersProvider).value ??
-        await database.clashProvidersDao.query().get();
-    return rows.where((item) => item.id == id).firstOrNull;
-  }
-
-  Future<ClashProvider> _compile(
-    ClashProvider provider, {
-    bool download = false,
-  }) async {
-    // Made here, or a Core running as root would create it as its own.
-    await File(await provider.path).parent.create(recursive: true);
-    final info = await _core.compileRuleSet(
-      provider.fileName,
-      url: download ? provider.url : '',
+    unawaited(
+      _applyIfReferenced(provider.kind, {provider.label, ?previous?.label}),
     );
-    final next = provider.withInfo(info);
-    if (!next.isCompiled) {
-      await File(await next.compiledPath).safeDelete();
-    }
-    return next;
+    return const [];
   }
 
-  Future<ClashProvider> _compileContent(
-    ClashProvider provider,
-    List<int> content,
-  ) async {
-    final stagedName = '${provider.fileName}.new';
-    final staged = await appPath.getProviderCachePath(stagedName);
-    try {
-      await File(staged).safeWriteAsBytes(content);
-      final next = provider.withInfo(await _core.compileRuleSet(stagedName));
-      if (next.isCompiled) {
-        await File('$staged.mrs').rename(await next.compiledPath);
-      } else {
-        await File(await next.compiledPath).safeDelete();
-      }
-      await File(staged).rename(await next.path);
-      return next;
-    } finally {
-      await File(staged).safeDelete();
-      await File('$staged.mrs').safeDelete();
+  Future<List<Profile>> delProvider(ClashProvider provider) async {
+    final users = await profilesUsing(provider);
+    if (users.isEmpty) {
+      ref.read(clashProvidersProvider(provider.kind).notifier).del(provider.id);
+      unawaited(_clearCache(provider));
     }
+    return users;
   }
 
-  /// A subscription's set can share the name, so match by path.
-  Future<ClashProvider?> remoteProviderOf(ExternalProvider external) async {
-    final path = external.path;
-    if (external.type != 'Rule' ||
-        external.vehicleType != 'File' ||
-        path == null) {
-      return null;
+  /// Any overwrite counts: a profile back on custom uses its groups again.
+  Future<List<Profile>> profilesUsing(ClashProvider provider) async {
+    final shadowedByProfile =
+        provider.kind == ProviderKind.proxy &&
+        ref.read(profileProvidersProvider).containsKey(provider.label);
+    if (shadowedByProfile) {
+      return const [];
     }
-    for (final provider in await database.clashProvidersDao.query().get()) {
-      if (provider.isRemote && await provider.corePath == path) {
-        return provider;
-      }
-    }
-    return null;
+    return profilesReferencing(provider.kind, provider.label);
   }
 
-  /// Returns false when the set changed shape, which only a reapply loads.
-  Future<bool> syncRemote(ClashProvider provider) async {
-    final next = await _compile(provider, download: true);
-    if (next == provider) {
-      return true;
-    }
-    await database.clashProviders.put(next.toCompanion());
-    unawaited(applyIfReferenced(ProviderKind.rule, {next.label}, force: true));
-    return false;
-  }
-
-  /// Backups leave remote sets out and older sets have no mrs yet.
-  Future<ClashProvider> prepare(ClashProvider provider) async {
-    if (await File(await provider.corePath).exists()) {
-      return provider;
-    }
-    try {
-      final next = await _compile(
-        provider,
-        download:
-            provider.isRemote && !await File(await provider.path).exists(),
-      );
-      if (next != provider) {
-        await database.clashProviders.put(next.toCompanion());
-      }
-      return next;
-    } catch (e) {
-      commonPrint.log(
-        'prepare rule set ${provider.label}: $e',
-        logLevel: LogLevel.warning,
-      );
-      return provider;
-    }
-  }
-
-  void delProvider(ClashProvider provider) {
-    ref.read(clashProvidersProvider.notifier).del(provider.id);
-    unawaited(_clearCache(provider));
-  }
-
-  Future<List<Profile>> profilesUsing(ClashProvider provider) {
-    return profilesReferencing(ProviderKind.rule, provider.label);
-  }
-
+  /// A name a profile's own subscription defines resolves there, so only the
+  /// rest reach a profile or an app-level provider of that name.
   Future<List<Profile>> profilesReferencing(
     ProviderKind kind,
     String name,
   ) async {
     final ids = switch (kind) {
       ProviderKind.proxy => await database.proxyGroupsDao.profileIdsUsing(name),
-      ProviderKind.rule => await database.rulesDao.profileIdsUsingRuleProvider(
-        name,
-      ),
+      ProviderKind.rule =>
+        await database.rulesDao.profileIdsUsingCustomRuleProvider(name),
     };
-    return [
+    final candidates = [
       for (final profile in ref.read(profilesProvider))
-        if (ids.contains(profile.id) ||
-            kind == ProviderKind.rule &&
-                profile.type == ProfileType.custom &&
-                profile.overrides.ruleSets.contains(name))
-          profile,
+        if (ids.contains(profile.id)) profile,
     ];
+    final defining = await profilesDefining(kind, name, candidates);
+    return [
+      for (final profile in candidates)
+        if (!defining.contains(profile)) profile,
+    ];
+  }
+
+  Future<List<Profile>> profilesDefining(
+    ProviderKind kind,
+    String name,
+    Iterable<Profile> profiles,
+  ) async {
+    final defining = <Profile>[];
+    for (final profile in profiles) {
+      if ((await _subscriptionProviders(profile.id, kind)).contains(name)) {
+        defining.add(profile);
+      }
+    }
+    return defining;
+  }
+
+  /// Unreadable counts as defining nothing, keeping deletes on the safe side.
+  Future<Set<String>> _subscriptionProviders(
+    int profileId,
+    ProviderKind kind,
+  ) async {
+    final Map<String, dynamic> config;
+    try {
+      config = await ref.read(coreHandlerProvider).getConfig(profileId);
+    } catch (e) {
+      commonPrint.log(
+        'read providers of profile $profileId: $e',
+        logLevel: LogLevel.warning,
+      );
+      return const {};
+    }
+    final section =
+        config[switch (kind) {
+          ProviderKind.proxy => 'proxy-providers',
+          ProviderKind.rule => 'rule-providers',
+        }];
+    return section is Map ? {for (final key in section.keys) '$key'} : const {};
   }
 
   Future<void> _clearCache(ClashProvider provider) async {
     await File(await provider.path).safeDelete();
-    await File(await provider.compiledPath).safeDelete();
   }
 
   Future<bool> _isReferenced(
@@ -200,79 +132,21 @@ class ClashProvidersAction extends _$ClashProvidersAction {
           (group) => group.use?.any(labels.contains) ?? false,
         ),
       ProviderKind.rule =>
-        (ref
-                    .read(profilesProvider)
-                    .getProfile(profileId)
-                    ?.overrides
-                    .ruleSets
-                    .any(labels.contains) ??
-                false) ||
-            (await database.rulesDao.queryProfileRules(profileId).get()).any(
-              (rule) => rule.ruleSets.any(labels.contains),
-            ),
+        (await database.rulesDao.queryProfileCustomRules(profileId).get()).any(
+          (rule) =>
+              rule.ruleAction == RuleAction.RULE_SET &&
+              labels.contains(rule.ruleProvider),
+        ),
     };
   }
 
-  /// [force] reapplies a provider whose content changed under the same path,
-  /// which leaves the generated config unchanged.
-  Future<void> applyIfReferenced(
-    ProviderKind kind,
-    Set<String> labels, {
-    bool force = false,
-  }) => _applyIf(
-    (profileId) => _isReferenced(profileId, kind, labels),
-    force: force,
-  );
-
-  Future<void> applyIfProxiesNamed(Set<String> names) => _applyIf(
-    (profileId) async => (await database.proxyGroupsDao.query(profileId).get())
-        .any((group) => group.proxies?.any(names.contains) ?? false),
-  );
-
-  Future<void> _applyIf(
-    Future<bool> Function(int profileId) isReferenced, {
-    bool force = false,
-  }) async {
-    if (!await _currentUses(isReferenced)) {
-      return;
-    }
-    ref
-        .read(setupActionProvider.notifier)
-        .applyProfileDebounce(silence: true, force: force);
-  }
-
-  /// A reapply would close every connection and reset the route.
-  Future<void> _reloadIfReferenced(ClashProvider provider) async {
-    if (!await _currentUses(
-      (profileId) =>
-          _isReferenced(profileId, ProviderKind.rule, {provider.label}),
-    )) {
-      return;
-    }
-    try {
-      final message = await _core.updateExternalProvider(
-        providerName: provider.label,
-      );
-      if (message.isEmpty) {
-        return;
-      }
-    } catch (error) {
-      commonPrint.log(
-        'reload ${provider.label} failed: $error',
-        logLevel: coreFailureLogLevel(error),
-      );
-    }
-    ref
-        .read(setupActionProvider.notifier)
-        .applyProfileDebounce(silence: true, force: true);
-  }
-
-  Future<bool> _currentUses(
-    Future<bool> Function(int profileId) isReferenced,
-  ) async {
+  Future<void> _applyIfReferenced(ProviderKind kind, Set<String> labels) async {
     final profile = ref.read(currentProfileProvider);
-    return profile != null &&
-        profile.type == ProfileType.custom &&
-        await isReferenced(profile.id);
+    if (profile == null ||
+        profile.overwriteType != OverwriteType.custom ||
+        !await _isReferenced(profile.id, kind, labels)) {
+      return;
+    }
+    ref.read(setupActionProvider.notifier).applyProfileDebounce(silence: true);
   }
 }

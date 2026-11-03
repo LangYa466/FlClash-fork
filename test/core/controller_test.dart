@@ -1,7 +1,5 @@
 import 'dart:async';
-import 'dart:io';
 
-import 'package:fl_clash/common/exception.dart';
 import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/core/desktop/model.dart';
 import 'package:fl_clash/core/interface.dart';
@@ -17,7 +15,6 @@ void main() {
   late CoreController controller;
 
   setUpAll(() {
-    registerFallbackValue(Duration.zero);
     registerFallbackValue(
       const SetupParams(selectedMap: {}, testUrl: 'http://x.com'),
     );
@@ -38,6 +35,9 @@ void main() {
     );
     registerFallbackValue(
       const ChangeProxyParams(groupName: 'G', proxyName: 'P'),
+    );
+    registerFallbackValue(
+      const UpdateGeoDataParams(geoType: 't', geoName: 'n'),
     );
   });
 
@@ -108,51 +108,6 @@ void main() {
       verify(() => mock.validateConfig('/path')).called(1);
     });
 
-    group('validateProfile', () {
-      late Directory dir;
-      late String path;
-
-      setUp(() {
-        dir = Directory.systemTemp.createTempSync('validate_profile_test');
-        path = '${dir.path}/profile.yaml';
-        when(() => mock.validateConfig(path)).thenAnswer((_) async => '');
-      });
-
-      tearDown(() => dir.deleteSync(recursive: true));
-
-      test('decrypts an age-encrypted config in place', () async {
-        File(
-          path,
-        ).writeAsStringSync('-----BEGIN AGE ENCRYPTED FILE-----\nYWdl\n');
-        when(
-          () => mock.decryptConfig(path, 'AGE-SECRET-KEY-1A'),
-        ).thenAnswer((_) async => 'proxies: []');
-
-        expect(await controller.validateProfile(path, 'AGE-SECRET-KEY-1A'), '');
-        expect(File(path).readAsStringSync(), 'proxies: []');
-      });
-
-      test('asks for a key an encrypted config lacks', () async {
-        File(
-          path,
-        ).writeAsStringSync('-----BEGIN AGE ENCRYPTED FILE-----\nYWdl\n');
-
-        await expectLater(
-          controller.validateProfile(path),
-          throwsA(isA<AgeSecretKeyRequiredException>()),
-        );
-        verifyNever(() => mock.decryptConfig(any(), any()));
-      });
-
-      test('leaves a plain config as it is', () async {
-        File(path).writeAsStringSync('proxies: []');
-
-        expect(await controller.validateProfile(path, 'AGE-SECRET-KEY-1A'), '');
-        verifyNever(() => mock.decryptConfig(any(), any()));
-        expect(File(path).readAsStringSync(), 'proxies: []');
-      });
-    });
-
     test('updateConfig delegates to interface', () async {
       const params = UpdateParams(
         tun: Tun(enable: false),
@@ -208,20 +163,13 @@ void main() {
     });
 
     test('watchRoute delegates to interface', () async {
-      const snapshot = RouteSnapshot(coreEpoch: 3, routeVersion: 1);
+      const snapshot = RouteSnapshot(
+        coreEpoch: 3,
+        picksVersion: 1,
+        picks: {'Proxy': 'HK-01'},
+      );
       when(() => mock.watchRoute(true)).thenAnswer((_) async => snapshot);
       expect(await controller.watchRoute(true), snapshot);
-    });
-
-    test('checkRoutes delegates to interface', () async {
-      const params = CheckRoutesParams(
-        routes: [
-          [RouteHit(host: 'example.com:443', exit: 'HK-01')],
-        ],
-      );
-      const check = RouteCheck(coreEpoch: 3, routeVersion: 2, held: [true]);
-      when(() => mock.checkRoutes(params)).thenAnswer((_) async => check);
-      expect(await controller.checkRoutes(params), check);
     });
   });
 
@@ -316,14 +264,10 @@ void main() {
 
   group('misc methods', () {
     test('getDelay delegates structured delay', () async {
-      when(() => mock.asyncTestDelay(any(), any(), any())).thenAnswer(
+      when(() => mock.asyncTestDelay(any(), any())).thenAnswer(
         (_) async => const Delay(name: 'P1', value: 100, url: 'test.com'),
       );
-      final result = await controller.getDelay(
-        'test.com',
-        'P1',
-        const Duration(seconds: 1),
-      );
+      final result = await controller.getDelay('test.com', 'P1');
       expect(result?.name, 'P1');
       expect(result?.value, 100);
     });

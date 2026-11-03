@@ -10,6 +10,9 @@ class SystemAction extends _$SystemAction {
   void build() {}
 
   Future<List<Package>> getPackages() async {
+    if (ref.read(isMobileViewProvider)) {
+      await Future.delayed(commonDuration);
+    }
     ref.read(packagesProvider.notifier).value = await app?.getPackages() ?? [];
     return ref.read(packagesProvider);
   }
@@ -51,7 +54,7 @@ class SystemAction extends _$SystemAction {
       ?saveOperation,
       bootGuard.markClosed(),
       if (systemDnsCoordinator != null) systemDnsCoordinator!.shutdown(),
-      ?systemProxyQueue?.close(),
+      if (proxy != null) proxy!.stopProxy(),
     ]);
   }
 

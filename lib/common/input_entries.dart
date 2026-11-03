@@ -1,14 +1,6 @@
 import 'package:fl_clash/enum/enum.dart';
 
-import 'string.dart';
-
-enum InputIssueKind {
-  keyTooLong,
-  valueTooLong,
-  missingValue,
-  invalidUrl,
-  invalidValue,
-}
+enum InputIssueKind { keyTooLong, valueTooLong, missingValue }
 
 class InputIssue {
   final int line;
@@ -48,7 +40,6 @@ class ParsedInput<T> {
 final _lineSeparator = RegExp(r'\r?\n');
 final _listSeparator = RegExp(r'[,，]');
 final _whitespace = RegExp(r'\s');
-final _whitespaces = RegExp(r'\s+');
 final _ruleTypes = {for (final action in RuleAction.values) action.value};
 
 /// fake-ip-filter in rule mode takes whole rules such as
@@ -86,7 +77,6 @@ ParsedInput<String> parseListInput(
   String text, {
   Set<String> existing = const {},
   int? maxLength,
-  bool Function(String value)? isValid,
 }) {
   final entries = <String>[];
   final issues = <InputIssue>[];
@@ -112,16 +102,6 @@ ParsedInput<String> parseListInput(
         );
         continue;
       }
-      if (isValid != null && !isValid(value)) {
-        issues.add(
-          InputIssue(
-            line: index + 1,
-            raw: value,
-            kind: InputIssueKind.invalidValue,
-          ),
-        );
-        continue;
-      }
       if (!seen.add(value)) {
         continue;
       }
@@ -130,51 +110,6 @@ ParsedInput<String> parseListInput(
         continue;
       }
       entries.add(value);
-    }
-  }
-  return ParsedInput(
-    entries: entries,
-    skippedExisting: skippedExisting,
-    issues: issues,
-  );
-}
-
-/// A url never carries whitespace, so any run of it separates two.
-ParsedInput<String> parseUrlInput(
-  String text, {
-  required bool Function(String url) isValid,
-  Set<String> existing = const {},
-}) {
-  final entries = <String>[];
-  final issues = <InputIssue>[];
-  final seen = <String>{};
-  var skippedExisting = 0;
-  final lines = text.split(_lineSeparator);
-  for (var index = 0; index < lines.length; index++) {
-    final line = _stripLineMarkup(lines[index]);
-    for (final raw in line.isShareLink ? [line] : line.split(_whitespaces)) {
-      final url = _unquote(raw);
-      if (url.isEmpty) {
-        continue;
-      }
-      if (!isValid(url)) {
-        issues.add(
-          InputIssue(
-            line: index + 1,
-            raw: url,
-            kind: InputIssueKind.invalidUrl,
-          ),
-        );
-        continue;
-      }
-      if (!seen.add(url)) {
-        continue;
-      }
-      if (existing.contains(url)) {
-        skippedExisting++;
-        continue;
-      }
-      entries.add(url);
     }
   }
   return ParsedInput(
@@ -224,10 +159,7 @@ ParsedInput<MapEntry<String, String>> parseMapInput(
   Set<String> existingKeys = const {},
   int? keyMaxLength,
   int? valueMaxLength,
-  bool ignoreKeyCase = false,
 }) {
-  String foldKey(String key) => ignoreKeyCase ? key.toLowerCase() : key;
-  final takenKeys = existingKeys.map(foldKey).toSet();
   final entries = <MapEntry<String, String>>[];
   final issues = <InputIssue>[];
   final seen = <String>{};
@@ -269,11 +201,10 @@ ParsedInput<MapEntry<String, String>> parseMapInput(
       );
       continue;
     }
-    final key = foldKey(entry.key);
-    if (!seen.add(key)) {
+    if (!seen.add(entry.key)) {
       continue;
     }
-    if (takenKeys.contains(key)) {
+    if (existingKeys.contains(entry.key)) {
       skippedExisting++;
       continue;
     }

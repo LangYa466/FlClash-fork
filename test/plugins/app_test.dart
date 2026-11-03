@@ -1,6 +1,3 @@
-import 'dart:async';
-import 'dart:math';
-
 import 'package:fl_clash/common/boot_record.dart';
 import 'package:fl_clash/common/constant.dart';
 import 'package:fl_clash/plugins/app.dart';
@@ -40,6 +37,7 @@ void main() {
     expect(iconCallCount, 1);
     expect(results.first, isNotNull);
     expect(cached, same(results.first));
+    expect(app.hasPackageIcon('com.a'), isTrue);
     expect(app.getCachedPackageIcon('com.a'), same(results.first));
 
     await app.getPackageIcon('com.b');
@@ -72,37 +70,6 @@ void main() {
     },
   );
 
-  test(
-    'asks Android for a bounded number of package icons at a time',
-    () async {
-      var inFlight = 0;
-      var peak = 0;
-      final release = Completer<void>();
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            inFlight++;
-            peak = max(peak, inFlight);
-            await release.future;
-            inFlight--;
-            return '/icons/${call.arguments['packageName']}.png';
-          });
-
-      final app = App();
-      final icons = Future.wait([
-        for (var i = 0; i < maxConcurrentIconLoads * 2; i++)
-          app.getPackageIcon('com.$i'),
-      ]);
-      await pumpEventQueue();
-
-      expect(inFlight, maxConcurrentIconLoads);
-
-      release.complete();
-
-      expect(await icons, everyElement(isNotNull));
-      expect(peak, maxConcurrentIconLoads);
-    },
-  );
-
   test('caches a failed package icon lookup', () async {
     var iconCallCount = 0;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -117,6 +84,8 @@ void main() {
     expect(await app.getPackageIcon('com.a'), isNull);
     expect(await app.getPackageIcon(''), isNull);
     expect(iconCallCount, 2);
+    expect(app.hasPackageIcon('com.a'), isTrue);
+    expect(app.hasPackageIcon(''), isTrue);
   });
 
   test('reads the last process exit info from Android', () async {

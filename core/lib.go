@@ -1,6 +1,11 @@
-//go:build android
+//go:build android && cgo
 
-package core
+package main
+
+/*
+#include <stdlib.h>
+*/
+import "C"
 
 import (
 	"core/platform"
@@ -13,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"unsafe"
 
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/process"
@@ -22,26 +28,19 @@ import (
 	"github.com/metacubex/mihomo/log"
 )
 
-type TunCallbacks interface {
-	Protect(fd int) bool
-	ResolveUid(protocol int, source, target string) int
-	ResolvePackage(uid int) string
-}
-
 var (
 	eventListenerLock sync.RWMutex
-	eventListener     func([]byte)
-	listening         atomic.Bool
+	eventListener     unsafe.Pointer
 )
 
 type TunHandler struct {
-	listener  *sing_tun.Listener
-	callbacks TunCallbacks
+	listener *sing_tun.Listener
+	callback unsafe.Pointer
 
 	mu sync.RWMutex
 }
 
-func (th *TunHandler) start(fd int, stack, address, dns, options string) bool {
+func (th *TunHandler) start(fd int, stack, address, dns string) bool {
 	configMu.Lock()
 	defer configMu.Unlock()
 
@@ -54,7 +53,7 @@ func (th *TunHandler) start(fd int, stack, address, dns, options string) bool {
 	// on this very goroutine — an RLock taken while this one holds the write
 	// lock deadlocks the start outright. Nothing is lost by dropping it: both
 	// hooks return early until th.listener is set, which is below.
-	tunListener := t.Start(fd, stack, address, dns, options)
+	tunListener := t.Start(fd, stack, address, dns)
 
 	th.mu.Lock()
 	defer th.mu.Unlock()
@@ -78,28 +77,48 @@ func (th *TunHandler) clear() {
 	if th.listener != nil {
 		_ = th.listener.Close()
 	}
-	th.callbacks = nil
+	if th.callback != nil {
+		releaseObject(th.callback)
+	}
+	th.callback = nil
 	th.listener = nil
 }
 
-// A refused protect never fails the dial: mihomo's tunnel retries a failed
-// dial ten times, and Android refuses only after the VPN was revoked, when the
-// routes are gone and an unprotected socket takes the default network.
-func (th *TunHandler) handleProtect(fd int) {
+// protectFailing tracks whether the last protect call was refused, so a stuck
+// VpnService produces one log line rather than one per connection.
+var protectFailing atomic.Bool
+
+func (th *TunHandler) handleProtect(fd int) error {
 	th.mu.RLock()
 	defer th.mu.RUnlock()
 
-	if th.listener == nil || th.callbacks == nil {
-		return
+	if th.listener == nil || th.callback == nil {
+		// The tun routes are already live at this point (Android establishes
+		// them before it hands the fd over), so an unprotected socket would be
+		// routed straight back into the tunnel and hang until it times out.
+		// Failing it here costs nothing and is at least visible.
+		return errTunNotReady
 	}
-	th.callbacks.Protect(fd)
+
+	if !protect(th.callback, fd) {
+		if protectFailing.CompareAndSwap(false, true) {
+			logError("VpnService.protect refused a socket; connections would loop back into the tunnel")
+		}
+		return errProtectRefused
+	}
+
+	if protectFailing.CompareAndSwap(true, false) {
+		log.Infoln("[TUN] VpnService.protect recovered")
+	}
+	return nil
 }
 
 func (th *TunHandler) handleResolveProcess(source, target net.Addr) (int, string) {
 	th.mu.RLock()
 	defer th.mu.RUnlock()
 
-	if th.listener == nil || th.callbacks == nil {
+	// A released callback is a null jobject, and JNI aborts on a call through one.
+	if th.listener == nil || th.callback == nil {
 		return -1, ""
 	}
 	var protocol int
@@ -113,12 +132,12 @@ func (th *TunHandler) handleResolveProcess(source, target net.Addr) (int, string
 	if sdkVersion.Load() < 29 {
 		uid = platform.QuerySocketUidFromProcFs(source, target)
 	} else {
-		uid = th.callbacks.ResolveUid(protocol, source.String(), target.String())
+		uid = resolveUid(th.callback, protocol, source.String(), target.String())
 	}
 	if uid < 0 {
 		return -1, ""
 	}
-	return uid, th.callbacks.ResolvePackage(uid)
+	return uid, resolvePackage(th.callback, uid)
 }
 
 var (
@@ -136,9 +155,13 @@ func installHooks() {
 			if th == nil {
 				return nil
 			}
-			return conn.Control(func(fd uintptr) {
-				th.handleProtect(int(fd))
-			})
+			var protectErr error
+			if err := conn.Control(func(fd uintptr) {
+				protectErr = th.handleProtect(int(fd))
+			}); err != nil {
+				return err
+			}
+			return protectErr
 		}
 		process.DefaultPackageNameResolver = func(metadata *constant.Metadata) (string, error) {
 			th := activeTunHandler.Load()
@@ -172,9 +195,11 @@ func (th *TunHandler) removeHook() {
 }
 
 var (
-	tunLock    sync.Mutex
-	errBlocked = errors.New("blocked: the process is out of file descriptors")
-	tunHandler *TunHandler
+	tunLock           sync.Mutex
+	errBlocked        = errors.New("blocked: the process is out of file descriptors")
+	errTunNotReady    = errors.New("blocked: the tun listener is not ready")
+	errProtectRefused = errors.New("blocked: VpnService.protect refused the socket")
+	tunHandler        *TunHandler
 )
 
 func handleStopTun() {
@@ -191,18 +216,21 @@ func stopTunLocked() {
 	tunHandler = nil
 }
 
-func handleStartTun(callbacks TunCallbacks, fd int, stack, address, dns, options string) bool {
+func handleStartTun(callback unsafe.Pointer, fd int, stack, address, dns string) bool {
 	tunLock.Lock()
 	defer tunLock.Unlock()
 	stopTunLocked()
 	if fd == 0 {
+		if callback != nil {
+			releaseObject(callback)
+		}
 		logError("startTun was handed no tun descriptor")
 		return false
 	}
 	tunHandler = &TunHandler{
-		callbacks: callbacks,
+		callback: callback,
 	}
-	if tunHandler.start(fd, stack, address, dns, options) {
+	if tunHandler.start(fd, stack, address, dns) {
 		return true
 	}
 	// start() already cleared the handler, so nothing protects sockets from
@@ -225,7 +253,7 @@ func handleUpdateDns(value string) {
 		addr = strings.Split(value, ",")
 	}
 	seq := dnsUpdateSeq.Add(1)
-	safeGo("updateDns", func() {
+	safeGoDetached("updateDns", func() {
 		dnsUpdateMu.Lock()
 		defer dnsUpdateMu.Unlock()
 		if seq != dnsUpdateSeq.Load() {
@@ -237,37 +265,38 @@ func handleUpdateDns(value string) {
 	})
 }
 
+func (response MethodResponse) send() {
+	data, err := response.JSON()
+	if err != nil {
+		logError("MethodResponse marshal error: id=%s err=%v", response.ID, err)
+		releaseObject(response.callback)
+		return
+	}
+	invokeResult(response.callback, string(data))
+	releaseObject(response.callback)
+}
+
 func init() {
-	registerMethod(updateDnsMethod, withArguments(func(value string) bool {
-		handleUpdateDns(value)
-		return true
+	registerMethod(updateDnsMethod, withArguments(func(value *string, response MethodResponse) {
+		handleUpdateDns(*value)
+		response.success(true)
 	}))
 }
 
-// gobind runs an export on the caller's thread and turns no panic into a Java
-// exception, so a panic that leaves one ends the whole application.
-func recoverExport(name string) {
-	if r := recover(); r != nil {
-		logError("panic in %s: %v\n%s", name, r, stackTrace())
-	}
-}
-
-func InvokeMethod(data string, reply func([]byte)) {
-	defer recoverExport("invokeMethod")
+//export invokeMethod
+func invokeMethod(callback unsafe.Pointer, paramsChar *C.char) {
+	params := takeCString(paramsChar)
 	call := &MethodCall{}
-	if err := json.Unmarshal([]byte(data), call); err != nil {
-		reply(encodeResponse(MethodResponse{Error: &MethodError{
-			Code:    "invalid_method_call",
-			Message: err.Error(),
-		}}))
+	if err := json.Unmarshal([]byte(params), call); err != nil {
+		newMethodResponse("", callback).failure("invalid_method_call", err.Error(), nil)
 		return
 	}
-	dispatchMethodCall(call, reply)
+	dispatchMethodCall(call, newMethodResponse(call.ID, callback))
 }
 
-func StartTun(callbacks TunCallbacks, fd int, stack, address, dns, options string) bool {
-	defer recoverExport("startTun")
-	started := handleStartTun(callbacks, fd, stack, address, dns, options)
+//export startTUN
+func startTUN(callback unsafe.Pointer, fd C.int, stackChar, addressChar, dnsChar *C.char) bool {
+	started := handleStartTun(callback, int(fd), takeCString(stackChar), takeCString(addressChar), takeCString(dnsChar))
 	if !started {
 		return false
 	}
@@ -275,46 +304,47 @@ func StartTun(callbacks TunCallbacks, fd int, stack, address, dns, options strin
 		handleStartListener()
 	} else {
 		handleResetConnections()
-		bumpRouteEpoch()
 	}
 	return true
 }
 
-func QuickSetup(initParamsString, setupParamsString string, answer func(string)) {
+//export quickSetup
+func quickSetup(callback unsafe.Pointer, initParamsChar *C.char, setupParamsChar *C.char) {
 	go func() {
+		defer releaseObject(callback)
 		defer func() {
 			if r := recover(); r != nil {
 				logError("panic in quickSetup: %v\n%s", r, stackTrace())
-				answer(fmt.Sprintf("internal panic: %v", r))
+				invokeResult(callback, fmt.Sprintf("internal panic: %v", r))
 			}
 		}()
+		initParamsString := takeCString(initParamsChar)
+		setupParamsString := takeCString(setupParamsChar)
 		initParams := InitParams{}
-		if err := json.Unmarshal([]byte(initParamsString), &initParams); err != nil {
-			answer("init failed")
+		if err := json.Unmarshal([]byte(initParamsString), &initParams); err != nil || !handleInitClash(&initParams) {
+			invokeResult(callback, "init failed")
 			return
 		}
-		handleInitClash(&initParams)
-		setupParams := &SetupParams{}
-		if err := json.Unmarshal([]byte(setupParamsString), setupParams); err != nil {
-			answer(err.Error())
+		setupParams := defaultSetupParams()
+		if err := UnmarshalJson([]byte(setupParamsString), setupParams); err != nil {
+			invokeResult(callback, err.Error())
 			return
 		}
 		isRunning.Store(true)
-		if err := handleSetupConfig(setupParams); err != nil {
-			answer(err.Error())
-			return
-		}
-		answer("")
+		invokeResult(callback, handleSetupConfig(setupParams))
 	}()
 }
 
 // The listener goes away with the Flutter engine, which never gets to release
 // the route watch it held, while the service and this core run on.
-func SetEventListener(listener func([]byte)) {
-	defer recoverExport("setEventListener")
+//
+//export setEventListener
+func setEventListener(listener unsafe.Pointer) {
 	eventListenerLock.Lock()
+	if eventListener != nil {
+		releaseObject(eventListener)
+	}
 	eventListener = listener
-	listening.Store(listener != nil)
 	eventListenerLock.Unlock()
 	if listener == nil {
 		stopRouteWatch()
@@ -322,17 +352,19 @@ func SetEventListener(listener func([]byte)) {
 }
 
 func hasEventListener() bool {
-	return listening.Load()
+	eventListenerLock.RLock()
+	defer eventListenerLock.RUnlock()
+	return eventListener != nil
 }
 
-func GetTotalTraffic(onlyStatisticsProxy bool) string {
-	defer recoverExport("getTotalTraffic")
-	return marshalResult(handleGetTotalTraffic(onlyStatisticsProxy))
+//export getTotalTraffic
+func getTotalTraffic(onlyStatisticsProxy bool) *C.char {
+	return C.CString(marshalResult(handleGetTotalTraffic(onlyStatisticsProxy)))
 }
 
-func GetTraffic(onlyStatisticsProxy bool) string {
-	defer recoverExport("getTraffic")
-	return marshalResult(handleGetTraffic(onlyStatisticsProxy))
+//export getTraffic
+func getTraffic(onlyStatisticsProxy bool) *C.char {
+	return C.CString(marshalResult(handleGetTraffic(onlyStatisticsProxy)))
 }
 
 func marshalResult(value any) string {
@@ -350,52 +382,23 @@ func deliverEvent(data []byte) {
 	if eventListener == nil {
 		return
 	}
-	eventListener(data)
+	invokeResult(eventListener, string(data))
 }
 
-func StopTun() {
-	defer recoverExport("stopTun")
+//export stopTun
+func stopTun() {
 	handleStopTun()
 	if isRunning.Load() {
 		handleStopListener()
 	}
 }
 
-func StartListener() {
-	defer recoverExport("startListener")
-	if !isRunning.Load() {
-		handleStartListener()
-	}
+//export forceGC
+func forceGC() {
+	handleForceGC()
 }
 
-func StopListener() {
-	defer recoverExport("stopListener")
-	if isRunning.Load() {
-		handleStopListener()
-	}
-}
-
-var forceGCPending atomic.Bool
-
-// Android calls this from onLowMemory and onTrimMemory on the main thread, which
-// the Flutter UI shares, and a full collection of a large profile spans frames.
-func ForceGC() {
-	defer recoverExport("forceGC")
-	if !forceGCPending.CompareAndSwap(false, true) {
-		return
-	}
-	safeGo("forceGC", func() {
-		defer forceGCPending.Store(false)
-		handleForceGC()
-	})
-}
-
-func UpdateDns(value string) {
-	defer recoverExport("updateDns")
-	handleUpdateDns(value)
-}
-
-func ResetNetwork() {
-	defer recoverExport("resetNetwork")
-	safeGo("resetNetwork", handleResetNetwork)
+//export updateDns
+func updateDns(s *C.char) {
+	handleUpdateDns(takeCString(s))
 }

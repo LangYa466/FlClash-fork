@@ -2,10 +2,11 @@ import 'dart:async';
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
-import 'package:fl_clash/ui/ui.dart';
+import 'package:fl_clash/widgets/list.dart';
+import 'package:fl_clash/widgets/scaffold.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -28,15 +29,12 @@ class AboutView extends ConsumerWidget {
   Future<void> _checkUpdate(BuildContext context, WidgetRef ref) async {
     if (ref.read(loadingProvider(LoadingTag.checkUpdate))) return;
     final commonAction = ref.read(commonActionProvider.notifier);
-    final result = await globalState.loadingRun(
-      () async => (release: await request.checkForUpdate()),
+    final data = await globalState.loadingRun<Map<String, dynamic>?>(
+      request.checkForUpdate,
       title: context.appLocalizations.checkUpdate,
       tag: LoadingTag.checkUpdate,
     );
-    if (result == null) return;
-    unawaited(
-      commonAction.checkUpdateResultHandle(data: result.release, isUser: true),
-    );
+    unawaited(commonAction.checkUpdateResultHandle(data: data, isUser: true));
   }
 
   Widget _buildLinkItem({
@@ -64,10 +62,9 @@ class AboutView extends ConsumerWidget {
       isLoading: isLoading,
       title: appLocalizations.about,
       body: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 16).copyWith(
-          top: context.contentTopPadding,
-          bottom: 32 + context.bottomInset,
-        ),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 16,
+        ).copyWith(top: context.contentTopPadding, bottom: 32),
         children: [
           _AboutHero(
             isCheckingUpdate: isLoading,
@@ -85,7 +82,7 @@ class AboutView extends ConsumerWidget {
             },
           ),
           const SizedBox(height: 8),
-          generateSection(
+          generateSectionV3(
             title: appLocalizations.more,
             items: [
               _buildLinkItem(
@@ -103,12 +100,12 @@ class AboutView extends ConsumerWidget {
               _buildLinkItem(
                 glyph: AppGlyphs.send,
                 title: 'Telegram',
-                url: 'https://t.me/FlClash',
-                label: 't.me/FlClash',
+                url: 'https://t.me/langya_channel',
+                label: 't.me/langya_channel',
               ),
             ],
           ),
-          generateSection(
+          generateSectionV3(
             title: appLocalizations.otherContributors,
             items: [
               for (final contributor in _contributors)
@@ -144,6 +141,7 @@ class _AboutHero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = context.colorScheme;
+    final textTheme = context.textTheme;
     final appLocalizations = context.appLocalizations;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
@@ -153,7 +151,7 @@ class _AboutHero extends StatelessWidget {
             onEnterDeveloperMode: onEnterDeveloperMode,
             child: DecoratedBox(
               decoration: ShapeDecoration(
-                color: context.raisedSurfaceLevel.colorOf(colorScheme),
+                color: colorScheme.surfaceContainerHigh,
                 shape: AppShape.all(AppCorner.fit(_logoSize)),
               ),
               child: Padding(
@@ -169,7 +167,9 @@ class _AboutHero extends StatelessWidget {
           const SizedBox(height: 20),
           Text(
             appName,
-            style: AppTextStyle.title2.of(context, emphasized: true),
+            style: textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -184,7 +184,7 @@ class _AboutHero extends StatelessWidget {
               ),
               _Pill(
                 label: 'GPL-3.0',
-                color: context.raisedSurfaceLevel.colorOf(colorScheme),
+                color: colorScheme.surfaceContainerHighest,
                 foregroundColor: colorScheme.onSurfaceVariant,
               ),
             ],
@@ -195,17 +195,17 @@ class _AboutHero extends StatelessWidget {
             child: Text(
               appLocalizations.desc,
               textAlign: TextAlign.center,
-              style: AppTextStyle.subheadline
-                  .of(context)
-                  .copyWith(color: colorScheme.onSurfaceVariant, height: 1.5),
+              style: textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                height: 1.5,
+              ),
             ),
           ),
           const SizedBox(height: 20),
-          TonalButton(
-            size: TonalButtonSize.bar,
-            glyph: AppGlyphs.sync,
-            label: appLocalizations.checkUpdate,
+          FilledButton.tonalIcon(
             onPressed: isCheckingUpdate ? null : onCheckUpdate,
+            icon: const GlyphIcon(AppGlyphs.sync, fill: 1),
+            label: Text(appLocalizations.checkUpdate),
           ),
         ],
       ),
@@ -232,9 +232,10 @@ class _Pill extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         child: Text(
           label,
-          style: AppTextStyle.caption1
-              .of(context, emphasized: true)
-              .copyWith(color: foregroundColor),
+          style: context.textTheme.labelMedium?.copyWith(
+            color: foregroundColor,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
@@ -251,7 +252,7 @@ class _LinkBadge extends StatelessWidget {
     final colorScheme = context.colorScheme;
     return DecoratedBox(
       decoration: ShapeDecoration(
-        color: context.raisedSurfaceLevel.colorOf(colorScheme),
+        color: colorScheme.secondaryContainer,
         shape: AppShape.md,
       ),
       child: SizedBox.square(
@@ -260,7 +261,7 @@ class _LinkBadge extends StatelessWidget {
           child: GlyphIcon(
             glyph,
             size: 20,
-            color: colorScheme.onSurfaceVariant,
+            color: colorScheme.onSecondaryContainer,
           ),
         ),
       ),

@@ -31,13 +31,18 @@ class BootGuard {
 
   BootDecision get decision => _decision;
 
-  Future<BootDecision> evaluate({required int? profileId}) async {
+  Future<BootDecision> evaluate({
+    required int? profileId,
+  }) async {
     if (!_supported) {
       return _decision;
     }
     final record = await _readRecord();
     final exitInfo = await _readExitInfo();
-    final decision = resolveBootDecision(record: record, exitInfo: exitInfo);
+    final decision = resolveBootDecision(
+      record: record,
+      exitInfo: exitInfo,
+    );
     if (decision.isDegraded) {
       commonPrint.log(
         'Previous launch did not finish: $decision',

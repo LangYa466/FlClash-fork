@@ -1,9 +1,9 @@
 import 'dart:ui' as ui;
 
-import 'package:fl_clash/features/form/form.dart';
+import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/models/common.dart';
 import 'package:fl_clash/providers/app.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -51,7 +51,7 @@ void main() {
     );
 
     final tile = tester.widget<ListTile>(find.byType(ListTile));
-    final control = tester.widget<CommonSwitch>(find.byType(CommonSwitch));
+    final control = tester.widget<Switch>(find.byType(Switch));
 
     expect(tile.onTap, isNull);
     expect(control.onChanged, isNull);
@@ -69,7 +69,7 @@ void main() {
       TestApp(
         overrides: [_viewSizeOverride],
         child: Scaffold(
-          body: generateSection(
+          body: generateSectionV3(
             items: [
               ListItem.toggle(
                 title: const Text('Grouped'),
@@ -205,7 +205,7 @@ void main() {
     expect(_top(tester, 'c'), lessThan(_top(tester, 'a')));
   });
 
-  testWidgets('ListItem.options picks from a menu its value opens', (
+  testWidgets('ListItem.options keeps a null option apart from dismissal', (
     tester,
   ) async {
     final changes = <String?>[];
@@ -216,6 +216,7 @@ void main() {
         child: Scaffold(
           body: ListItem<String?>.options(
             title: const Text('Language'),
+            dialogTitle: 'Language',
             options: const [null, 'en'],
             value: 'en',
             textBuilder: (value) => value ?? 'Default',
@@ -225,33 +226,91 @@ void main() {
       ),
     );
 
-    expect(find.text('en'), findsOneWidget);
-    expect(find.byGlyph(AppGlyphs.picker), findsOneWidget);
-
     await tester.tap(find.text('Language'));
     await tester.pumpAndSettle();
-
-    expect(find.byType(CommonPopupMenu), findsOneWidget);
-    expect(
-      find.descendant(
-        of: find.byType(CommonPopupMenu),
-        matching: find.byGlyph(AppGlyphs.check),
-      ),
-      findsOneWidget,
-    );
-
     await tester.tapAt(const Offset(10, 10));
     await tester.pumpAndSettle();
 
     expect(find.text('Default'), findsNothing);
     expect(changes, isEmpty);
 
-    await tester.tap(find.text('en'));
+    await tester.tap(find.text('Language'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Default'));
     await tester.pumpAndSettle();
 
     expect(changes, [null]);
+  });
+
+  testWidgets('OptionsDialog returns the tapped option', (tester) async {
+    String? selected;
+
+    await tester.pumpWidget(
+      TestApp(
+        overrides: [_viewSizeOverride],
+        child: Builder(
+          builder: (context) {
+            return FilledButton(
+              onPressed: () async {
+                selected = await showDialog<String>(
+                  context: context,
+                  builder: (_) => const OptionsDialog<String>(
+                    title: 'Options',
+                    options: ['One', 'Two'],
+                    value: 'One',
+                    textBuilder: _optionText,
+                  ),
+                );
+              },
+              child: const Text('Open'),
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Two'));
+    await tester.pumpAndSettle();
+
+    expect(selected, 'Two');
+  });
+
+  testWidgets('OptionsDialog cancel closes without a value', (tester) async {
+    String? selected = 'unset';
+
+    await tester.pumpWidget(
+      TestApp(
+        overrides: [_viewSizeOverride],
+        child: Builder(
+          builder: (context) {
+            return FilledButton(
+              onPressed: () async {
+                selected = await showDialog<String>(
+                  context: context,
+                  builder: (_) => const OptionsDialog<String>(
+                    title: 'Options',
+                    options: ['One', 'Two'],
+                    value: 'One',
+                    textBuilder: _optionText,
+                  ),
+                );
+              },
+              child: const Text('Open'),
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OptionsDialog<String>), findsNothing);
+    expect(selected, isNull);
   });
 
   testWidgets('InputDialog validates, submits, and resets values', (
@@ -304,114 +363,82 @@ void main() {
     expect(result, 'default');
   });
 
-  testWidgets('InputDialog offers reset only while the text differs from it', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      TestApp(
-        overrides: [_viewSizeOverride],
-        child: Builder(
-          builder: (context) {
-            return FilledButton(
-              onPressed: () => showDialog<String>(
-                context: context,
-                builder: (_) => const InputDialog(
-                  title: 'Value',
-                  value: 'changed',
-                  resetValue: 'default',
-                ),
+  testWidgets(
+    'NamedUrlDialog puts the optional name first and focuses the url',
+    (tester) async {
+      ({String label, String url})? result;
+
+      await tester.pumpWidget(
+        TestApp(
+          overrides: [_viewSizeOverride],
+          child: Builder(
+            builder: (context) {
+              return FilledButton(
+                onPressed: () async {
+                  result = await showDialog<({String label, String url})>(
+                    context: context,
+                    builder: (_) => const NamedUrlDialog(title: 'Import'),
+                  );
+                },
+                child: const Text('Open'),
+              );
+            },
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      final nameField = find.widgetWithText(TextFormField, 'Name');
+      final urlField = find.widgetWithText(TextFormField, 'URL');
+      expect(
+        tester.getTopLeft(nameField).dy,
+        lessThan(tester.getTopLeft(urlField).dy),
+      );
+      expect(find.text('Optional'), findsOneWidget);
+      expect(
+        tester
+            .widget<EditableText>(
+              find.descendant(
+                of: urlField,
+                matching: find.byType(EditableText),
               ),
-              child: const Text('Open'),
-            );
-          },
-        ),
-      ),
-    );
+            )
+            .focusNode
+            .hasFocus,
+        isTrue,
+      );
 
-    await tester.tap(find.text('Open'));
-    await tester.pumpAndSettle();
-    expect(find.text('Reset'), findsOneWidget);
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.text('URL cannot be empty'), findsOneWidget);
+      expect(result, isNull);
 
-    await tester.enterText(find.byType(TextFormField), 'default');
-    await tester.pump();
-    expect(find.text('Reset'), findsNothing);
-    expect(find.text('Cancel'), findsOneWidget);
-
-    await tester.enterText(find.byType(TextFormField), 'other');
-    await tester.pump();
-    expect(find.text('Reset'), findsOneWidget);
-  });
-
-  testWidgets('InputDialog grows with a long value instead of scrolling it', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      TestApp(
-        overrides: [_viewSizeOverride],
-        child: Builder(
-          builder: (context) {
-            return FilledButton(
-              onPressed: () => showDialog<String>(
-                context: context,
-                builder: (_) => const InputDialog(title: 'Value', value: ''),
+      await tester.enterText(nameField, 'Home');
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pump();
+      expect(
+        tester
+            .widget<EditableText>(
+              find.descendant(
+                of: urlField,
+                matching: find.byType(EditableText),
               ),
-              child: const Text('Open'),
-            );
-          },
-        ),
-      ),
-    );
+            )
+            .focusNode
+            .hasFocus,
+        isTrue,
+      );
 
-    await tester.tap(find.text('Open'));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byType(TextFormField),
-      List.filled(6, 'https://a.example').join('/'),
-    );
-    await tester.pumpAndSettle();
+      await tester.enterText(urlField, 'https://example.com/sub');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(result, (label: 'Home', url: 'https://example.com/sub'));
+    },
+  );
 
-    final scrollables = find.descendant(
-      of: find.byType(AlertDialog),
-      matching: find.byType(Scrollable),
-    );
-    expect(scrollables, findsWidgets);
-    for (final element in scrollables.evaluate()) {
-      final position = (element as StatefulElement).state as ScrollableState;
-      expect(position.position.maxScrollExtent, 0);
-    }
-  });
-
-  testWidgets('SecretTextFormField hides the text until revealed', (
-    tester,
-  ) async {
-    final controller = TextEditingController(text: 'AGE-SECRET-KEY-1A');
-    addTearDown(controller.dispose);
-
-    await tester.pumpWidget(
-      TestApp(
-        overrides: [_viewSizeOverride],
-        child: Material(
-          child: SecretTextFormField(controller: controller, maxLines: 5),
-        ),
-      ),
-    );
-
-    EditableText editable() => tester.widget(find.byType(EditableText));
-    expect(editable().obscureText, isTrue);
-    expect(editable().maxLines, 1);
-
-    await tester.tap(find.byTooltip('Show password'));
-    await tester.pump();
-    expect(editable().obscureText, isFalse);
-    expect(editable().maxLines, 5);
-
-    await tester.tap(find.byTooltip('Hide password'));
-    await tester.pump();
-    expect(editable().obscureText, isTrue);
-    expect(controller.text, 'AGE-SECRET-KEY-1A');
-  });
-
-  testWidgets('EntryDialog returns a scalar value', (tester) async {
+  testWidgets('EntryDialog returns scalar and map values', (tester) async {
     Object? result;
 
     await tester.pumpWidget(
@@ -419,19 +446,40 @@ void main() {
         overrides: [_viewSizeOverride],
         child: Builder(
           builder: (context) {
-            return FilledButton(
-              onPressed: () async {
-                result = await showDialog<List<String>>(
-                  context: context,
-                  builder: (_) => const EntryDialog<String>(
-                    title: 'Scalar',
-                    valueField: Field(label: 'Value', value: ''),
-                    valueMaxLength: 4,
-                    toEntry: _scalarEntry,
-                  ),
-                );
-              },
-              child: const Text('Scalar'),
+            return Column(
+              children: [
+                FilledButton(
+                  onPressed: () async {
+                    result = await showDialog<List<String>>(
+                      context: context,
+                      builder: (_) => const EntryDialog<String>(
+                        title: 'Scalar',
+                        valueField: Field(label: 'Value', value: ''),
+                        valueMaxLength: 4,
+                        toEntry: _scalarEntry,
+                      ),
+                    );
+                  },
+                  child: const Text('Scalar'),
+                ),
+                FilledButton(
+                  onPressed: () async {
+                    result = await showDialog<List<MapEntry<String, String>>>(
+                      context: context,
+                      builder: (_) =>
+                          const EntryDialog<MapEntry<String, String>>(
+                            title: 'Pair',
+                            keyField: Field(label: 'Key', value: ''),
+                            valueField: Field(label: 'Value', value: ''),
+                            keyMaxLength: 3,
+                            valueMaxLength: 4,
+                            toEntry: _pairEntry,
+                          ),
+                    );
+                  },
+                  child: const Text('Pair'),
+                ),
+              ],
             );
           },
         ),
@@ -447,6 +495,17 @@ void main() {
     await tester.tap(find.text('Confirm'));
     await tester.pumpAndSettle();
     expect(result, ['valu']);
+
+    await tester.tap(find.text('Pair'));
+    await tester.pumpAndSettle();
+    final fields = find.byType(TextFormField);
+    await tester.enterText(fields.first, 'key1');
+    await tester.enterText(fields.last, 'value');
+    await tester.tap(find.text('Confirm'));
+    await tester.pumpAndSettle();
+    final pair = (result! as List<MapEntry<String, String>>).single;
+    expect(pair.key, 'key');
+    expect(pair.value, 'valu');
   });
 
   testWidgets('ListEditView adds, edits, selects, and deletes items', (
@@ -464,20 +523,22 @@ void main() {
             title: 'Items',
             items: ['a', 'b'],
             titleBuilder: _textBuilder,
+            subtitleBuilder: _textBuilder,
+            leadingBuilder: _textBuilder,
             itemMaxLength: 4,
           ),
         ),
       ),
     );
 
-    await tester.tap(find.byTooltip('Add'));
+    await tester.tap(find.text('Add'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField), 'c');
     await tester.tap(find.text('Confirm'));
     await tester.pumpAndSettle();
-    expect(find.text('c'), findsOneWidget);
+    expect(find.text('c'), findsNWidgets(3));
 
-    await tester.tap(find.byTooltip('Add'));
+    await tester.tap(find.text('Add'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField), 'x, y');
     await tester.tap(find.text('Confirm'));
@@ -492,97 +553,23 @@ void main() {
     await tester.enterText(find.byType(TextFormField), ' x ');
     await tester.tap(find.text('Confirm'));
     await tester.pumpAndSettle();
-    expect(find.text('x'), findsOneWidget);
+    expect(find.text('x'), findsNWidgets(3));
 
     await tester.tap(find.text('c').first);
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField), 'd');
     await tester.tap(find.text('Confirm'));
     await tester.pumpAndSettle();
-    expect(find.text('d'), findsOneWidget);
+    expect(find.text('d'), findsNWidgets(3));
 
     await tester.tap(find.byType(Checkbox).first);
     await tester.pump();
     expect(find.byGlyph(AppGlyphs.delete), findsOneWidget);
-    await tester.tap(find.byTooltip('Select all'));
+    await tester.tap(find.text('Select all'));
     await tester.pump();
     await tester.tap(find.byGlyph(AppGlyphs.delete));
-    await tester.pumpAndSettle();
-    expect(find.text('No data'), findsNothing);
-    await tester.tap(find.widgetWithText(TextButton, 'Delete'));
-    await tester.pumpAndSettle();
+    await tester.pump();
     expect(find.text('No data'), findsOneWidget);
-  });
-
-  Future<Object? Function()> openListEditView(WidgetTester tester) async {
-    Object? result;
-    await tester.pumpWidget(
-      ProviderScope(
-        child: TestApp(
-          overrides: [_viewSizeOverride],
-          child: Scaffold(
-            body: Builder(
-              builder: (context) => TextButton(
-                onPressed: () async {
-                  result = await Navigator.of(context).push<Object?>(
-                    CommonRoute<Object?>(
-                      builder: (_) => const ListEditView(
-                        title: 'Items',
-                        items: ['a', 'b'],
-                        titleBuilder: _textBuilder,
-                      ),
-                    ),
-                  );
-                },
-                child: const Text('open'),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    await tester.tap(find.text('open'));
-    await tester.pumpAndSettle();
-    expect(find.byTooltip('Save'), findsNothing);
-    await tester.tap(find.byTooltip('Add'));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextFormField), 'c');
-    await tester.tap(find.text('Confirm'));
-    await tester.pumpAndSettle();
-    return () => result;
-  }
-
-  testWidgets('ListEditView hands its items back once saved', (tester) async {
-    final result = await openListEditView(tester);
-
-    await tester.tap(find.byTooltip('Save'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('open'), findsOneWidget);
-    expect(result(), ['a', 'b', 'c']);
-  });
-
-  testWidgets('ListEditView asks before dropping unsaved items', (
-    tester,
-  ) async {
-    final result = await openListEditView(tester);
-
-    await tester.timedDrag(
-      find.text('a'),
-      const Offset(800, 0),
-      const Duration(seconds: 1),
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('open'), findsNothing);
-
-    await tester.binding.handlePopRoute();
-    await tester.pumpAndSettle();
-    expect(find.text('Save the changes?'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('open'), findsOneWidget);
-    expect(result(), isNull);
   });
 
   testWidgets('MapEditView adds, reorders, selects, and deletes entries', (
@@ -601,6 +588,7 @@ void main() {
             entries: {'a': '1', 'b': '2'},
             titleBuilder: _entryTitle,
             subtitleBuilder: _entrySubtitle,
+            leadingBuilder: _entryTitle,
             keyMaxLength: 4,
             valueMaxLength: 4,
           ),
@@ -618,31 +606,21 @@ void main() {
       lessThan(tester.getTopLeft(find.text('a').first).dy),
     );
 
-    await tester.tap(find.byTooltip('Add'));
+    await tester.tap(find.text('Add'));
     await tester.pumpAndSettle();
     final fields = find.byType(TextFormField);
-    await tester.tap(find.byTooltip('Confirm'));
+    await tester.enterText(fields.first, 'c');
+    await tester.enterText(fields.last, '3');
+    await tester.tap(find.text('Confirm'));
     await tester.pumpAndSettle();
-    expect(find.text('Key cannot be empty'), findsOneWidget);
-    await tester.enterText(fields.first, 'a');
-    await tester.pumpAndSettle();
-    expect(find.text('Key already exists'), findsOneWidget);
-    await tester.enterText(fields.first, 'ccccc');
-    await tester.enterText(fields.last, '33333');
-    await tester.tap(find.byTooltip('Confirm'));
-    await tester.pumpAndSettle();
-    expect(find.text('cccc'), findsOneWidget);
-    expect(find.text('3333'), findsOneWidget);
+    expect(find.text('c'), findsNWidgets(2));
 
     await tester.tap(find.byType(Checkbox).first);
     await tester.pump();
-    await tester.tap(find.byTooltip('Select all'));
+    await tester.tap(find.text('Select all'));
     await tester.pump();
     await tester.tap(find.byGlyph(AppGlyphs.delete));
-    await tester.pumpAndSettle();
-    expect(find.text('No data'), findsNothing);
-    await tester.tap(find.widgetWithText(TextButton, 'Delete'));
-    await tester.pumpAndSettle();
+    await tester.pump();
     expect(find.text('No data'), findsOneWidget);
   });
 
@@ -667,7 +645,7 @@ void main() {
         ),
       );
 
-      await tester.tap(find.byTooltip('Add'));
+      await tester.tap(find.text('Add'));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Batch add'));
       await tester.pumpAndSettle();
@@ -719,7 +697,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byTooltip('Add'));
+    await tester.tap(find.text('Add'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField).first, 'c');
     await tester.enterText(find.byType(TextFormField).last, '3');
@@ -727,11 +705,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('1 to add, 0 skipped as existing'), findsOneWidget);
     await tester.enterText(find.byType(TextField), 'c 3\na 9\nd');
-    await tester.pumpAndSettle();
+    await tester.pump();
     expect(find.text('Line 3: Value cannot be empty'), findsOneWidget);
-    await tester.tap(find.byTooltip('Confirm'));
-    await tester.pumpAndSettle();
-    expect(find.text('Line 3: Value cannot be empty'), findsOneWidget);
+    expect(_confirmButton(tester).onPressed, isNull);
 
     await tester.enterText(
       find.byType(TextField),
@@ -739,7 +715,7 @@ void main() {
     );
     await tester.pump();
     expect(find.text('1 to add, 1 skipped as existing'), findsOneWidget);
-    await tester.tap(find.byTooltip('Confirm'));
+    await tester.tap(find.text('Confirm'));
     await tester.pumpAndSettle();
     expect(find.text('geosite:cn'), findsOneWidget);
     expect(find.text('tls://1.1.1.1:853'), findsOneWidget);
@@ -767,7 +743,12 @@ void main() {
   });
 }
 
-String _scalarEntry(String value) => value;
+String _optionText(String value) => value;
+
+String _scalarEntry(String? key, String value) => value;
+
+MapEntry<String, String> _pairEntry(String? key, String value) =>
+    MapEntry(key!, value);
 
 Widget _textBuilder(String value) {
   return Text(value);

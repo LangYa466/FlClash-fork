@@ -14,13 +14,6 @@ File _resolveSource(String relativePath) {
   return direct;
 }
 
-String _body(String source, String signature) {
-  final start = source.indexOf(signature);
-  expect(start, isNonNegative, reason: signature);
-  final end = source.indexOf('\n}\n', start);
-  return source.substring(start, end);
-}
-
 void main() {
   late String pluginSource;
 
@@ -49,39 +42,16 @@ void main() {
   });
 
   test('windows rejected show leaves the visible menu untouched', () {
-    final show = _body(pluginSource, 'bool TrayPlugin::Show(');
-    final lastRejection = show.lastIndexOf('return false;');
-    final rebuild = show.indexOf('RebuildMenu(menu_, *items);');
-
-    expect(lastRejection, isNonNegative);
-    expect(rebuild, greaterThan(lastRejection));
-  });
-
-  test('windows retries an icon the shell refused at sign-in', () {
-    final show = _body(pluginSource, 'bool TrayPlugin::Show(');
-
-    expect(show, contains('ScheduleRestore();'));
-    expect(show.trimRight(), endsWith('return true;'));
+    expect(pluginSource, contains('bool applied = ApplyIcon(!visible_);'));
     expect(
-      _body(pluginSource, 'void TrayPlugin::RestoreIcon('),
-      contains('ApplyIcon(false) || ApplyIcon(true)'),
-    );
-    expect(pluginSource, contains('message == WM_TIMER'));
-  });
-
-  test('windows hide deletes an icon whose add may have landed', () {
-    final hide = _body(pluginSource, 'void TrayPlugin::Hide(');
-
-    expect(
-      hide,
+      pluginSource,
       contains('''
-  if (icon_requested_) {
-    ::Shell_NotifyIconW(NIM_DELETE, &icon_data_);
-  }'''),
-    );
-    expect(
-      hide.indexOf('icon_requested_ = false;'),
-      greaterThan(hide.indexOf('NIM_DELETE')),
+  if (!applied) {
+    return false;
+  }
+  visible_ = true;
+
+  const flutter::EncodableList* items'''),
     );
   });
 }

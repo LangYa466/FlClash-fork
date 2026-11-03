@@ -3,91 +3,73 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/models/common.dart';
 import 'package:fl_clash/models/core.dart';
-import 'package:fl_clash/models/profile.dart';
 import 'package:fl_clash/pages/editor.dart';
 import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/core.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class ExternalProvidersSliver extends ConsumerStatefulWidget {
-  final List<ExternalProvider> providers;
-
-  const ExternalProvidersSliver({super.key, required this.providers});
+class ProvidersView extends ConsumerStatefulWidget {
+  const ProvidersView({super.key});
 
   @override
-  ConsumerState<ExternalProvidersSliver> createState() =>
-      _ExternalProvidersSliverState();
+  ConsumerState<ProvidersView> createState() => _ProvidersViewState();
 }
 
-class _ExternalProvidersSliverState
-    extends ConsumerState<ExternalProvidersSliver> {
-  bool _isUpdating = false;
-
+class _ProvidersViewState extends ConsumerState<ProvidersView> {
   Future<void> _updateProviders() async {
     final appLocalizations = context.appLocalizations;
+    final providers = ref.read(providersProvider);
     final proxiesAction = ref.read(proxiesActionProvider.notifier);
     final List<UpdatingMessage> messages = [];
-    setState(() => _isUpdating = true);
-    try {
-      await Future.wait(
-        widget.providers.map((provider) async {
-          try {
-            final message = await proxiesAction.updateProvider(
-              provider,
-              showLoading: true,
-            );
-            if (message.isNotEmpty) {
-              messages.add(
-                UpdatingMessage(label: provider.name, message: message),
-              );
-            }
-          } catch (error) {
-            messages.add(
-              UpdatingMessage(
-                label: provider.name,
-                message: userFacingErrorMessage(error, appLocalizations),
-              ),
-            );
-          }
-        }),
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _isUpdating = false);
+    final updateProviders = providers.map<Future>((provider) async {
+      try {
+        final message = await proxiesAction.updateProvider(
+          provider,
+          showLoading: true,
+        );
+        if (message.isNotEmpty) {
+          messages.add(UpdatingMessage(label: provider.name, message: message));
+        }
+      } catch (error) {
+        messages.add(
+          UpdatingMessage(
+            label: provider.name,
+            message: userFacingErrorMessage(error, appLocalizations),
+          ),
+        );
       }
-    }
+    });
+    await Future.wait(updateProviders);
     proxiesAction.updateGroupsDebounce();
-    dialogs.showFailures(messages);
+    if (messages.isNotEmpty) {
+      unawaited(dialogs.showAllUpdatingMessagesDialog(messages));
+    }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final appLocalizations = context.appLocalizations;
-    final providers = widget.providers;
-    return SliverMainAxisGroup(
-      slivers: [
-        SliverToBoxAdapter(
-          child: ListHeader(
-            title: appLocalizations.providers,
-            actions: [
-              IconButtonData(
-                glyph: AppGlyphs.sync,
-                tooltip: appLocalizations.update,
-                isLoading: _isUpdating,
-                onPressed: _updateProviders,
-              ),
-            ],
-          ),
-        ),
-        SliverList.builder(
+  List<Widget> _buildSection({
+    required String title,
+    required List<ExternalProvider> providers,
+  }) {
+    if (providers.isEmpty) {
+      return const [];
+    }
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: SliverToBoxAdapter(child: ListHeader(title: title)),
+      ),
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: SliverList.builder(
           itemCount: providers.length,
           itemBuilder: (_, index) {
             final provider = providers[index];
@@ -101,7 +83,47 @@ class _ExternalProvidersSliverState
             );
           },
         ),
+      ),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appLocalizations = context.appLocalizations;
+    final providers = ref.watch(providersProvider);
+    final proxyProviders = providers
+        .where((item) => item.type == 'Proxy')
+        .toList();
+    final ruleProviders = providers
+        .where((item) => item.type == 'Rule')
+        .toList();
+    return CommonScaffold(
+      actions: [
+        AppBarActionButton(
+          data: IconButtonData(
+            glyph: AppGlyphs.sync,
+            onPressed: _updateProviders,
+            tooltip: appLocalizations.update,
+          ),
+        ),
       ],
+      body: CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: SizedBox(height: context.contentTopPadding),
+          ),
+          ..._buildSection(
+            title: appLocalizations.proxies,
+            providers: proxyProviders,
+          ),
+          ..._buildSection(
+            title: appLocalizations.rules,
+            providers: ruleProviders,
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 16)),
+        ],
+      ),
+      title: appLocalizations.providers,
     );
   }
 }
@@ -117,11 +139,8 @@ class ProviderItem extends ConsumerStatefulWidget {
 
 class _ProviderItemState extends ConsumerState<ProviderItem> {
   _ProviderFile _file = _ProviderFile.binary;
-  bool _isAppRuleSet = false;
 
   ExternalProvider get provider => widget.provider;
-
-  bool get _isSyncable => provider.vehicleType == 'HTTP' || _isAppRuleSet;
 
   @override
   void initState() {
@@ -139,23 +158,17 @@ class _ProviderItemState extends ConsumerState<ProviderItem> {
   }
 
   Future<void> _probeFile() async {
-    final clashProvidersAction = ref.read(
-      clashProvidersActionProvider.notifier,
-    );
     final file = await _probeProviderFile(provider.path);
-    final isAppRuleSet =
-        await clashProvidersAction.remoteProviderOf(provider) != null;
-    if (!mounted || (file == _file && isAppRuleSet == _isAppRuleSet)) {
+    if (!mounted || file == _file) {
       return;
     }
     setState(() {
       _file = file;
-      _isAppRuleSet = isAppRuleSet;
     });
   }
 
   Future<void> _handleUpdateProvider() async {
-    if (!_isSyncable) return;
+    if (provider.vehicleType != 'HTTP') return;
     final proxiesAction = ref.read(proxiesActionProvider.notifier);
     await globalState.safeRun(() async {
       final message = await proxiesAction.updateProvider(
@@ -192,16 +205,12 @@ class _ProviderItemState extends ConsumerState<ProviderItem> {
     final path = provider.path;
     if (path == null || path.isEmpty) return;
     final core = ref.read(coreHandlerProvider);
-    final isRuleSet = _file == _ProviderFile.ruleSet;
     unawaited(
       BaseNavigator.push<void>(
         context,
         EditorPage(
           title: provider.name,
-          load: isRuleSet
-              ? () async =>
-                    CodeForgeDocument.fromText(await core.dumpRuleSet(path))
-              : () => _openProviderText(path),
+          load: () => core.dumpRuleSet(path),
           schema: EditorSchema.provider,
         ),
       ),
@@ -214,6 +223,7 @@ class _ProviderItemState extends ConsumerState<ProviderItem> {
         child: Builder(
           builder: (context) {
             return CommonDialog(
+              backgroundColor: context.colorScheme.surfaceContainerLow,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               title: context.appLocalizations.subscriptionInfo,
               actions: [
@@ -232,6 +242,25 @@ class _ProviderItemState extends ConsumerState<ProviderItem> {
         ),
       ),
     );
+  }
+
+  Widget? _buildProviderMetadata(BuildContext context) {
+    final countLabel = switch (provider.type) {
+      'Proxy' => context.appLocalizations.proxiesCount(provider.count),
+      'Rule' => context.appLocalizations.rulesCount(provider.count),
+      _ => null,
+    };
+    final chips = [
+      if (provider.updateAt.microsecondsSinceEpoch > 0)
+        MetaChip(label: provider.updateAt.getLastUpdateTimeDesc(context)),
+      if (provider.count > 0 && countLabel != null) MetaChip(label: countLabel),
+    ];
+    return chips.isEmpty
+        ? null
+        : Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 2),
+            child: Row(spacing: 4, children: chips),
+          );
   }
 
   List<CommonPopupMenuItem> _menuItems(BuildContext context) {
@@ -261,7 +290,7 @@ class _ProviderItemState extends ConsumerState<ProviderItem> {
           _handleSideLoadProvider();
         },
       ),
-      if (_isSyncable)
+      if (provider.vehicleType == 'HTTP')
         CommonPopupMenuItem(
           glyph: AppGlyphs.sync,
           label: appLocalizations.sync,
@@ -281,106 +310,41 @@ class _ProviderItemState extends ConsumerState<ProviderItem> {
   @override
   Widget build(BuildContext context) {
     final isUpdating = ref.watch(isUpdatingProvider(provider.updatingKey));
-    final previewable = _file != _ProviderFile.binary;
-    return ContextMenuRegion(
-      menuItems: isUpdating ? null : _menuItems(context),
-      child: _ExternalProviderItem(
-        provider: provider,
-        isUpdating: isUpdating,
-        onPressed: isUpdating || !previewable
-            ? null
-            : () => _handlePreviewProvider(context),
-      ),
-    );
-  }
-}
-
-class _ExternalProviderItem extends StatelessWidget {
-  final ExternalProvider provider;
-  final bool isUpdating;
-  final VoidCallback? onPressed;
-
-  const _ExternalProviderItem({
-    required this.provider,
-    required this.isUpdating,
-    this.onPressed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final appLocalizations = context.appLocalizations;
-    final count = provider.count;
-    final updateAt = provider.updateAt;
-    final subscriptionInfo = provider.subscriptionInfo;
-    final usage = subscriptionInfo?.usage;
     return DecorationListItem(
-      onPressed: onPressed,
-      title: ChipTitle(
-        title: provider.name,
-        chip: usage == null ? null : count.compact,
-        expire: subscriptionInfo?.expireDate,
-      ),
-      subtitle: switch ((subscriptionInfo, usage)) {
-        (final info?, final usage?) => _TrafficMeter(info: info, usage: usage),
-        _ => Text(switch (provider.type) {
-          'Proxy' => appLocalizations.proxiesCount(count, count.compact),
-          _ => appLocalizations.rulesCount(count, count.compact),
-        }),
-      },
-      trailing: AnimatedSwitcher(
-        duration: context.motionDuration(commonDuration),
-        layoutBuilder: (current, previous) => Stack(
-          alignment: Alignment.centerRight,
-          children: [...previous, ?current],
+      minVerticalPadding: 8,
+      contentPadding: const EdgeInsets.only(left: 16, right: 0),
+      title: Text(provider.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: _buildProviderMetadata(context),
+      trailing: SizedBox.square(
+        dimension: kMinInteractiveDimension,
+        child: FadeThroughBox(
+          alignment: Alignment.center,
+          child: isUpdating
+              ? const SizedBox.square(
+                  key: ValueKey('loading'),
+                  dimension: kMinInteractiveDimension,
+                  child: Padding(
+                    padding: EdgeInsets.all(12),
+                    child: CommonCircleLoading(),
+                  ),
+                )
+              : CommonPopupBox(
+                  key: const ValueKey('menu'),
+                  popupBuilder: (_) =>
+                      CommonPopupMenu(items: _menuItems(context)),
+                  targetBuilder: (open) {
+                    return IconButton(
+                      tooltip: context.appLocalizations.more,
+                      onPressed: () {
+                        open();
+                      },
+                      icon: const GlyphIcon(AppGlyphs.more),
+                    );
+                  },
+                ),
         ),
-        child: isUpdating
-            ? const CommonCircleLoading(key: ValueKey('loading'), size: 24)
-            : LastUpdateTimeText(
-                key: const ValueKey('time'),
-                lastUpdateDate: updateAt.microsecondsSinceEpoch > 0
-                    ? updateAt
-                    : null,
-                compact: true,
-                style: context.listCaptionStyle,
-              ),
       ),
     );
-  }
-}
-
-class _TrafficMeter extends StatelessWidget {
-  final SubscriptionInfo info;
-  final double usage;
-
-  const _TrafficMeter({required this.info, required this.usage});
-
-  @override
-  Widget build(BuildContext context) {
-    final used = info.upload + info.download;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      spacing: 6,
-      children: [
-        Text(
-          '${used.traffic.show} / ${info.total.traffic.show}',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        LinearProgressIndicator(
-          minHeight: 4,
-          value: usage,
-          backgroundColor: context.colorScheme.primary.opacity15,
-        ),
-      ],
-    );
-  }
-}
-
-Future<CodeForgeDocument> _openProviderText(String path) async {
-  try {
-    return await openEditorFile(path);
-  } on FormatException {
-    throw MessageException(currentAppLocalizations.nonTextProviderFile);
   }
 }
 
@@ -447,10 +411,20 @@ class _EditProviderView extends ConsumerStatefulWidget {
 }
 
 class _EditProviderViewState extends ConsumerState<_EditProviderView> {
-  Future<void> _handleSave(BuildContext context, EditorContent content) async {
+  String? _raw;
+
+  Future<String> _load() async {
+    try {
+      return _raw = await readTextFileTask(widget.path) ?? '';
+    } on FormatException {
+      throw MessageException(currentAppLocalizations.nonTextProviderFile);
+    }
+  }
+
+  Future<void> _handleSave(BuildContext context, String content) async {
     final proxiesAction = ref.read(proxiesActionProvider.notifier);
     final saved = await globalState.safeRun<bool>(() async {
-      await _sideLoadProvider(ref, widget.provider, await content.readBytes());
+      await _sideLoadProvider(ref, widget.provider, utf8.encode(content));
       return true;
     }, silence: false);
     if (saved != true) {
@@ -462,8 +436,15 @@ class _EditProviderViewState extends ConsumerState<_EditProviderView> {
     }
   }
 
-  Future<bool> _handlePop(BuildContext context, EditorContent content) async {
-    final res = await dialogs.showSaveChanges(title: widget.provider.name);
+  Future<bool> _handlePop(BuildContext context, String content) async {
+    final raw = _raw;
+    if (raw == null || content == raw) {
+      return true;
+    }
+    final res = await dialogs.showMessage(
+      title: widget.provider.name,
+      message: TextSpan(text: context.appLocalizations.saveChanges),
+    );
     if (res == null) {
       return false;
     }
@@ -478,7 +459,7 @@ class _EditProviderViewState extends ConsumerState<_EditProviderView> {
   Widget build(BuildContext context) {
     return EditorPage(
       title: widget.provider.name,
-      load: () => _openProviderText(widget.path),
+      load: _load,
       schema: EditorSchema.provider,
       onSave: (context, _, content) => _handleSave(context, content),
       onPop: (context, _, content) => _handlePop(context, content),

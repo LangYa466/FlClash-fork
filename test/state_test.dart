@@ -1,6 +1,5 @@
 import 'package:fl_clash/common/constant.dart';
 import 'package:fl_clash/providers/providers.dart';
-import 'package:fl_clash/ui/color.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -32,22 +31,22 @@ void main() {
           accentColor: const Color(defaultPrimaryColor),
         );
 
-    final style = container.read(themeSettingProvider).colorStyle;
+    final variant = container.read(themeSettingProvider).schemeVariant;
 
     expect(
       container.read(genColorSchemeProvider(Brightness.light)),
-      seededColorScheme(
+      ColorScheme.fromSeed(
         seedColor: lightSeed,
         brightness: Brightness.light,
-        style: style,
+        dynamicSchemeVariant: variant,
       ),
     );
     expect(
       container.read(genColorSchemeProvider(Brightness.dark)),
-      seededColorScheme(
+      ColorScheme.fromSeed(
         seedColor: darkSeed,
         brightness: Brightness.dark,
-        style: style,
+        dynamicSchemeVariant: variant,
       ),
     );
   });
@@ -88,10 +87,12 @@ void main() {
 
     expect(
       container.read(genColorSchemeProvider(Brightness.light)),
-      seededColorScheme(
+      ColorScheme.fromSeed(
         seedColor: accent,
         brightness: Brightness.light,
-        style: container.read(themeSettingProvider).colorStyle,
+        dynamicSchemeVariant: container
+            .read(themeSettingProvider)
+            .schemeVariant,
       ),
     );
   });

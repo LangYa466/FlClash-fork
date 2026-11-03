@@ -81,10 +81,7 @@ List<Group> computeHideTimeout({
       selectedMap[group.name] ?? '',
     );
     final visible = group.all.where((proxy) {
-      // A group's delay is its pick's, and hiding it would take away the only
-      // way to choose the group where the mode does not show it on its own.
-      if (proxy.name == selectedName ||
-          allGroups.getGroup(proxy.name) != null) {
+      if (proxy.name == selectedName) {
         return true;
       }
       final state = realStates.putIfAbsent(
@@ -112,9 +109,10 @@ SelectedProxyState getRealSelectedProxyState(
   required Map<String, String> selectedMap,
 }) {
   if (state.proxyName.isEmpty) return state;
-  final group = groups.getGroup(state.proxyName);
+  final index = groups.indexWhere((element) => element.name == state.proxyName);
   final newState = state.copyWith(group: true);
-  if (group == null) return newState;
+  if (index == -1) return newState;
+  final group = groups[index];
   final currentSelectedName = group.getCurrentSelectedName(
     selectedMap[newState.proxyName] ?? '',
   );

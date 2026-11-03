@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:fl_clash/ui/icons/icons.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -18,9 +18,10 @@ Widget _buildPage({bool wrapNavigator = false}) {
           ),
       ],
     ),
-    floatingActionButton: FloatingActionButton(
+    floatingActionButton: CommonFloatingActionButton(
       onPressed: () {},
-      child: const GlyphIcon(AppGlyphs.add, fill: 1),
+      icon: const GlyphIcon(AppGlyphs.add),
+      label: 'add',
     ),
   );
   final scopedPage = PageFocusScope(child: page);

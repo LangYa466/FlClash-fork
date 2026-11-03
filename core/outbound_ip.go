@@ -1,10 +1,9 @@
-package core
+package main
 
 import (
 	"context"
 	"net/netip"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/metacubex/http"
@@ -28,34 +27,30 @@ type OutboundIpParams struct {
 }
 
 type OutboundIpResult struct {
-	Url          string     `json:"url"`
-	Body         string     `json:"body"`
-	Delay        int64      `json:"delay"`
-	Chains       []string   `json:"chains"`
-	Error        string     `json:"error,omitempty"`
-	CoreEpoch    uint64     `json:"core-epoch"`
-	RouteVersion uint64     `json:"route-version"`
-	Hits         []RouteHit `json:"hits"`
-	NodeHits     []RouteHit `json:"node-hits,omitempty"`
+	Url          string   `json:"url"`
+	Body         string   `json:"body"`
+	Delay        int64    `json:"delay"`
+	Chains       []string `json:"chains"`
+	Error        string   `json:"error,omitempty"`
+	CoreEpoch    uint64   `json:"core-epoch"`
+	PicksVersion uint64   `json:"picks-version"`
 }
 
 // handleOutboundIp takes the first usable answer and cancels the losers so they
 // stop occupying probe slots. Url is the source that was asked, not where it
 // redirected, and Body is raw: Dart owns the sources and their parsers.
 func handleOutboundIp(params *OutboundIpParams) *OutboundIpResult {
-	epoch, version := routeStamp()
-	hits := &hitRecorder{}
+	epoch, picksVersion := routeStamp()
 	failure := func(kind string) *OutboundIpResult {
-		return &OutboundIpResult{Error: kind, CoreEpoch: epoch, RouteVersion: version, Hits: hits.list()}
+		return &OutboundIpResult{Error: kind, CoreEpoch: epoch, PicksVersion: picksVersion}
 	}
 	if len(params.Urls) == 0 {
 		return failure(probeErrorFailed)
 	}
 
-	timeout := timeoutFromMillis(params.Timeout, defaultProbeTimeout)
+	timeout := probeTimeout(params.Timeout)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	defer claimOutboundIp(epoch, cancel)()
 
 	answers := make(chan *OutboundIpResult, len(params.Urls))
 	next := 0
@@ -68,7 +63,7 @@ func handleOutboundIp(params *OutboundIpParams) *OutboundIpResult {
 		next++
 		inFlight++
 		go func() {
-			answers <- probeOutboundIpSource(ctx, url, params.ProxyName, timeout, hits)
+			answers <- probeOutboundIpSource(ctx, url, params.ProxyName, timeout)
 		}()
 	}
 
@@ -87,37 +82,13 @@ func handleOutboundIp(params *OutboundIpParams) *OutboundIpResult {
 		case <-stagger.C:
 			start()
 		case <-ctx.Done():
-			return failure(probeErrorKind(ctx.Err()))
+			return failure(probeErrorTimeout)
 		}
 	}
 	return failure(probeErrorFailed)
 }
 
-var (
-	outboundIpClaimsMu sync.Mutex
-	outboundIpClaims   = map[*context.CancelFunc]uint64{}
-)
-
-// Only an older epoch's lookup is stale; two targets of one epoch can share a request.
-func claimOutboundIp(epoch uint64, cancel context.CancelFunc) func() {
-	claim := &cancel
-	outboundIpClaimsMu.Lock()
-	for other, otherEpoch := range outboundIpClaims {
-		if otherEpoch < epoch {
-			(*other)()
-			delete(outboundIpClaims, other)
-		}
-	}
-	outboundIpClaims[claim] = epoch
-	outboundIpClaimsMu.Unlock()
-	return func() {
-		outboundIpClaimsMu.Lock()
-		delete(outboundIpClaims, claim)
-		outboundIpClaimsMu.Unlock()
-	}
-}
-
-func probeOutboundIpSource(ctx context.Context, url string, proxyName string, timeout time.Duration, hits *hitRecorder) *OutboundIpResult {
+func probeOutboundIpSource(ctx context.Context, url string, proxyName string, timeout time.Duration) *OutboundIpResult {
 	result := runProbe(ctx, probeRequest{
 		method:    http.MethodGet,
 		url:       url,
@@ -125,7 +96,6 @@ func probeOutboundIpSource(ctx context.Context, url string, proxyName string, ti
 		headers:   map[string]string{"User-Agent": browserUserAgent},
 		timeout:   timeout,
 		maxBody:   outboundIpMaxBody,
-		recorder:  hits,
 	})
 	if result == nil || result.Error != "" || result.StatusCode != http.StatusOK || !mentionsIp(result.Body) {
 		return nil
@@ -136,24 +106,8 @@ func probeOutboundIpSource(ctx context.Context, url string, proxyName string, ti
 		Delay:        result.Delay,
 		Chains:       result.Chains,
 		CoreEpoch:    result.CoreEpoch,
-		RouteVersion: result.RouteVersion,
-		Hits:         result.hits,
-		NodeHits:     nodeHits(result.Chains, proxyName, result.hits),
+		PicksVersion: result.PicksVersion,
 	}
-}
-
-// The hits as if the node the answer left through had been asked for: a load
-// balancer above it is the exit of the target, never of the node.
-func nodeHits(chains []string, proxyName string, hits []RouteHit) []RouteHit {
-	if len(chains) == 0 || chains[0] == proxyName {
-		return nil
-	}
-	node := chains[0]
-	var through []RouteHit
-	for _, hit := range hits {
-		through = withHit(through, RouteHit{Host: hit.Host, Proxy: node, Exit: resolveExit(hit.Host, node)})
-	}
-	return through
 }
 
 // RFC 6598 space for carrier-grade NAT, which IsPrivate leaves out.

@@ -1,6 +1,6 @@
 //go:build (darwin || linux) && !android
 
-package core
+package main
 
 import (
 	"errors"

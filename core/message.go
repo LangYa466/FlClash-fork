@@ -1,4 +1,4 @@
-package core
+package main
 
 import (
 	"encoding/json"
@@ -40,7 +40,7 @@ func classOfMessage(message Message) messageClass {
 		return stateMessageClass
 	case LogMessage, RequestMessage:
 		return bulkMessageClass
-	case DnsMessage, RequestTrafficMessage:
+	case DnsMessage:
 		return yieldingBulkMessageClass
 	default:
 		return priorityMessageClass
@@ -49,37 +49,34 @@ func classOfMessage(message Message) messageClass {
 
 // Request and DNS events fire per connection and per query for as long as the
 // Android service runs, engine or not; unheard, they are not worth encoding.
-func sendMessage(messageType MessageType, data any) (queued bool) {
+func sendMessage(message Message) {
 	if !hasEventListener() {
-		return false
+		return
 	}
-	message := Message{Type: messageType, Data: data}
 	switch classOfMessage(message) {
 	case stateMessageClass:
-		return enqueueState(stateMessageQueue, message)
+		enqueueState(stateMessageQueue, message)
 	case bulkMessageClass:
-		return enqueueLatest(bulkMessageQueue, message)
+		enqueueLatest(bulkMessageQueue, message)
 	case yieldingBulkMessageClass:
-		return enqueueState(bulkMessageQueue, message)
+		enqueueState(bulkMessageQueue, message)
 	default:
-		return enqueueLatest(priorityMessageQueue, message)
+		enqueueLatest(priorityMessageQueue, message)
 	}
 }
 
-func enqueueState(queue chan Message, message Message) bool {
+func enqueueState(queue chan Message, message Message) {
 	select {
 	case queue <- message:
-		return true
 	default:
-		return false
 	}
 }
 
-func enqueueLatest(queue chan Message, message Message) bool {
+func enqueueLatest(queue chan Message, message Message) {
 	for attempt := 0; attempt < messageEvictAttempts; attempt++ {
 		select {
 		case queue <- message:
-			return true
+			return
 		default:
 		}
 
@@ -88,7 +85,6 @@ func enqueueLatest(queue chan Message, message Message) bool {
 		default:
 		}
 	}
-	return false
 }
 
 func runMessageBatcher(
@@ -121,12 +117,7 @@ func runMessageBatcher(
 		batch = make([]Message, 0, messageBatchSize)
 		send(current)
 	}
-	// A closed queue is set to nil so it never wins a select again.
-	take := func(queue *<-chan Message, message Message, open bool) bool {
-		if !open {
-			*queue = nil
-			return false
-		}
+	appendMessage := func(message Message) {
 		if len(batch) == 0 {
 			timer.Reset(messageBatchInterval)
 			deadline = timer.C
@@ -135,14 +126,17 @@ func runMessageBatcher(
 		if len(batch) >= messageBatchSize {
 			flush()
 		}
-		return true
 	}
 
 	priorityBurst := 0
 	for stateMessages != nil || priorityMessages != nil || bulkMessages != nil {
 		select {
-		case message, open := <-stateMessages:
-			take(&stateMessages, message, open)
+		case message, ok := <-stateMessages:
+			if !ok {
+				stateMessages = nil
+			} else {
+				appendMessage(message)
+			}
 			continue
 		default:
 		}
@@ -150,18 +144,26 @@ func runMessageBatcher(
 		// Give bulk events one guaranteed opportunity after a bounded priority
 		// burst, while retaining priority preference under ordinary load.
 		if priorityBurst >= messagePriorityBurst && bulkMessages != nil {
-			priorityBurst = 0
 			select {
-			case message, open := <-bulkMessages:
-				take(&bulkMessages, message, open)
+			case message, ok := <-bulkMessages:
+				if !ok {
+					bulkMessages = nil
+				} else {
+					appendMessage(message)
+				}
+				priorityBurst = 0
 				continue
 			default:
+				priorityBurst = 0
 			}
 		}
 
 		select {
-		case message, open := <-priorityMessages:
-			if take(&priorityMessages, message, open) {
+		case message, ok := <-priorityMessages:
+			if !ok {
+				priorityMessages = nil
+			} else {
+				appendMessage(message)
 				priorityBurst++
 			}
 			continue
@@ -169,14 +171,25 @@ func runMessageBatcher(
 		}
 
 		select {
-		case message, open := <-stateMessages:
-			take(&stateMessages, message, open)
-		case message, open := <-priorityMessages:
-			if take(&priorityMessages, message, open) {
+		case message, ok := <-stateMessages:
+			if !ok {
+				stateMessages = nil
+			} else {
+				appendMessage(message)
+			}
+		case message, ok := <-priorityMessages:
+			if !ok {
+				priorityMessages = nil
+			} else {
+				appendMessage(message)
 				priorityBurst++
 			}
-		case message, open := <-bulkMessages:
-			take(&bulkMessages, message, open)
+		case message, ok := <-bulkMessages:
+			if !ok {
+				bulkMessages = nil
+			} else {
+				appendMessage(message)
+			}
 			priorityBurst = 0
 		case <-deadline:
 			flush()

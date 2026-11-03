@@ -81,8 +81,7 @@ void main() {
           chains: ['JP-02', 'auto'],
           checkedAt: 1700000000000,
           coreEpoch: 7,
-          routeVersion: 42,
-          hits: [RouteHit(host: 'www.netflix.com:443', exit: 'JP-02')],
+          picksVersion: 42,
         ),
       );
 
@@ -92,10 +91,7 @@ void main() {
       expect(check.node, 'JP-02');
       expect(check.chains, ['JP-02', 'auto']);
       expect(check.coreEpoch, 7);
-      expect(check.routeVersion, 42);
-      expect(check.hits, const [
-        RouteHit(host: 'www.netflix.com:443', exit: 'JP-02'),
-      ]);
+      expect(check.picksVersion, 42);
       expect(
         check.checkedAt,
         DateTime.fromMillisecondsSinceEpoch(1700000000000),

@@ -2,10 +2,10 @@ import 'dart:async';
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -53,17 +53,11 @@ class _LogsViewState extends ConsumerState<LogsView>
     with RouteMotionHoldMixin<LogsView> {
   final _listController = LogListController();
   late final ScrollController _scrollController;
-  late final _physics = FollowEndScrollPhysics(
-    isFollowing: () => _listController.value.autoScrollToEnd,
-  );
 
   @override
   void initState() {
     super.initState();
-    _scrollController = sheetScrollController(
-      context,
-      initialScrollOffset: double.maxFinite,
-    );
+    _scrollController = ScrollController(initialScrollOffset: double.maxFinite);
     _listController.setLogs(ref.read(logsProvider).list);
     ref.listenManual(logsProvider.select((state) => state.revision), (_, _) {
       updateLogsThrottler();
@@ -94,7 +88,7 @@ class _LogsViewState extends ConsumerState<LogsView>
     }, title: appLocalizations.exportLogs);
     if (res != true) return;
     unawaited(
-      dialogs.showAlert(
+      dialogs.showMessage(
         title: appLocalizations.tip,
         message: TextSpan(text: appLocalizations.exportSuccess),
       ),
@@ -150,19 +144,18 @@ class _LogsViewState extends ConsumerState<LogsView>
                   },
                   controller: _scrollController,
                   enable: state.autoScrollToEnd,
+                  dataSource: logs,
                   child: SuperListView.separated(
-                    physics: _physics,
+                    physics: const NextClampingScrollPhysics(),
                     reverse: true,
                     shrinkWrap: true,
                     controller: _scrollController,
                     padding: EdgeInsets.only(
-                      top: context.contentTopPadding,
-                      bottom: 16 + context.bottomInset,
+                      top: context.appBarInset,
+                      bottom: 16 + BottomInsetScope.of(context),
                     ),
                     itemCount: logs.length,
-                    extentEstimation: recordListExtentEstimation,
-                    separatorBuilder: (_, _) =>
-                        const SizedBox(height: recordListGap),
+                    separatorBuilder: (_, _) => const Divider(height: 0),
                     itemBuilder: (_, index) {
                       final log = logs[index];
                       return LogItem(
@@ -194,10 +187,12 @@ class LogItem extends StatelessWidget {
     final tone = switch (log.logLevel) {
       LogLevel.warning => RecordTone.warning,
       LogLevel.error => RecordTone.error,
-      LogLevel.info || LogLevel.debug || LogLevel.silent => RecordTone.neutral,
+      LogLevel.info => RecordTone.neutral,
+      LogLevel.debug || LogLevel.silent => RecordTone.muted,
     };
     final payload = LogPayload.parse(log.payload);
     return RecordListItem(
+      tone: tone,
       onTap: () {},
       header: RecordHeader(
         children: [
@@ -234,32 +229,35 @@ class _LogBody extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SelectableText(payload.message, style: styles.primary),
-          if (payload.tag.isNotEmpty)
-            Text(payload.tag, style: styles.secondary),
+          if (payload.tag.isNotEmpty) Text(payload.tag, style: styles.muted),
         ],
       );
     }
     return SelectableText.rich(
       TextSpan(
         children: [
-          TextSpan(text: route.destination, style: styles.title),
+          TextSpan(
+            text: route.destination,
+            style: styles.primary?.copyWith(fontWeight: FontWeight.w500),
+          ),
           if (route.error.isNotEmpty)
             TextSpan(
               text: '\n${route.error}',
-              style: styles.secondary.copyWith(color: errorColor),
+              style: styles.secondary?.copyWith(color: errorColor),
             ),
           const TextSpan(text: '\n'),
           if (route.rule.isNotEmpty) ...[
             TextSpan(text: route.rule, style: styles.secondary),
-            TextSpan(text: ' \u2192 ', style: styles.secondary.toJetBrainsMono),
+            TextSpan(text: ' \u2192 ', style: styles.muted?.toJetBrainsMono),
           ],
           TextSpan(
             text: route.proxy,
-            style: AppTextStyle.footnote
-                .of(context, emphasized: true)
-                .copyWith(color: context.colorScheme.primary),
+            style: styles.secondary?.copyWith(
+              color: context.colorScheme.primary,
+              fontWeight: FontWeight.w500,
+            ),
           ),
-          TextSpan(text: '\n$_sourceText', style: styles.secondary),
+          TextSpan(text: '\n$_sourceText', style: styles.muted),
         ],
       ),
     );

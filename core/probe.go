@@ -1,4 +1,4 @@
-package core
+package main
 
 import (
 	"bytes"
@@ -8,7 +8,6 @@ import (
 	"github.com/metacubex/http"
 	"io"
 	"net"
-	"slices"
 	"sync"
 	"time"
 
@@ -32,7 +31,7 @@ const (
 )
 
 var (
-	probeSlots = make(slots, probeConcurrency)
+	probeSlots = make(chan struct{}, probeConcurrency)
 
 	pendingProbeRoutes sync.Map
 )
@@ -50,12 +49,11 @@ type probeRoute struct {
 type probeDialer struct {
 	proxy constant.Proxy
 
-	mu    sync.Mutex
-	last  *routedConn
-	dials []*routedConn
+	mu   sync.Mutex
+	last *routedConn
 }
 
-func probeMetadata(address string) (*constant.Metadata, error) {
+func (d *probeDialer) dial(ctx context.Context, _ string, address string) (net.Conn, error) {
 	metadata := &constant.Metadata{
 		NetWork: constant.TCP,
 		Type:    constant.INNER,
@@ -65,34 +63,23 @@ func probeMetadata(address string) (*constant.Metadata, error) {
 	if err := metadata.SetRemoteAddress(address); err != nil {
 		return nil, err
 	}
-	return metadata, nil
-}
-
-func (d *probeDialer) dial(ctx context.Context, _ string, address string) (net.Conn, error) {
-	metadata, err := probeMetadata(address)
-	if err != nil {
-		return nil, err
-	}
-	attempt := d.track(address)
 	if d.proxy != nil {
 		conn, err := d.proxy.DialContext(ctx, metadata)
 		if err != nil {
 			return nil, err
 		}
-		attempt.settle(&probeRoute{chains: conn.Chains()})
-		d.remember(attempt)
+		d.remember(&routedConn{route: &probeRoute{chains: conn.Chains()}})
 		return conn, nil
 	}
 	if err := awaitTunnel(ctx); err != nil {
 		return nil, err
 	}
 	local, remote := N.Pipe()
-	attempt.Conn = local
-	attempt.metadata = metadata
-	pendingProbeRoutes.Store(metadata, attempt)
+	routed := &routedConn{Conn: local, metadata: metadata}
+	pendingProbeRoutes.Store(metadata, routed)
 	go tunnel.Tunnel.HandleTCPConn(remote, metadata)
-	d.remember(attempt)
-	return attempt, nil
+	d.remember(routed)
+	return routed, nil
 }
 
 // Applying a config suspends the tunnel before the route epoch moves, so a
@@ -109,70 +96,10 @@ func awaitTunnel(ctx context.Context) error {
 	return nil
 }
 
-func (d *probeDialer) track(address string) *routedConn {
-	attempt := &routedConn{address: address}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.dials = append(d.dials, attempt)
-	return attempt
-}
-
 func (d *probeDialer) remember(conn *routedConn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.last = conn
-}
-
-// A connection that never reached the tracker, a failed one, is matched
-// again for where it would have left.
-func (d *probeDialer) hits(proxyName string) []RouteHit {
-	d.mu.Lock()
-	dials := slices.Clone(d.dials)
-	d.mu.Unlock()
-	var hits []RouteHit
-	for _, dial := range dials {
-		hit := RouteHit{Host: dial.address, Proxy: proxyName}
-		if route := dial.resolve(); route != nil {
-			hit.Exit = exitOfChains(route.chains)
-		} else {
-			hit.Exit = resolveExit(dial.address, proxyName)
-		}
-		hits = withHit(hits, hit)
-	}
-	return hits
-}
-
-func withHit(hits []RouteHit, hit RouteHit) []RouteHit {
-	for index := range hits {
-		if hits[index].Host == hit.Host && hits[index].Proxy == hit.Proxy {
-			hits[index] = hit
-			return hits
-		}
-	}
-	return append(hits, hit)
-}
-
-// hitRecorder gathers the hits of every request one answer is made from.
-type hitRecorder struct {
-	mu   sync.Mutex
-	hits []RouteHit
-}
-
-func (r *hitRecorder) add(hits []RouteHit) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, hit := range hits {
-		r.hits = withHit(r.hits, hit)
-	}
-}
-
-func (r *hitRecorder) list() []RouteHit {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Clone(r.hits)
 }
 
 func (d *probeDialer) route() *probeRoute {
@@ -190,7 +117,6 @@ func (d *probeDialer) route() *probeRoute {
 type routedConn struct {
 	net.Conn
 	metadata *constant.Metadata
-	address  string
 
 	mu    sync.Mutex
 	route *probeRoute
@@ -226,6 +152,13 @@ func notifyProbeRoute(tracker statistic.Tracker) {
 	})
 }
 
+func probeTimeout(millis int64) time.Duration {
+	if millis <= 0 {
+		return defaultProbeTimeout
+	}
+	return time.Duration(millis) * time.Millisecond
+}
+
 func probeErrorKind(err error) string {
 	var netErr net.Error
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
@@ -248,8 +181,6 @@ type probeRequest struct {
 
 	// until sees the latest chunk and probeScanOverlap bytes before it.
 	until func(tail string) bool
-
-	recorder *hitRecorder
 }
 
 func handleProbe(params *ProbeParams) *ProbeResult {
@@ -258,7 +189,7 @@ func handleProbe(params *ProbeParams) *ProbeResult {
 		url:       params.Url,
 		proxyName: params.ProxyName,
 		headers:   params.Headers,
-		timeout:   timeoutFromMillis(params.Timeout, defaultProbeTimeout),
+		timeout:   probeTimeout(params.Timeout),
 		maxBody:   params.MaxBody,
 	})
 }
@@ -266,7 +197,7 @@ func handleProbe(params *ProbeParams) *ProbeResult {
 // runProbe returns nil when the request never got a slot before its deadline.
 func runProbe(parent context.Context, req probeRequest) *ProbeResult {
 	result := &ProbeResult{Url: req.url, Chains: []string{}}
-	result.CoreEpoch, result.RouteVersion = routeStamp()
+	result.CoreEpoch, result.PicksVersion = routeStamp()
 	fail := func(err error) *ProbeResult {
 		result.Error = probeErrorKind(err)
 		result.Message = err.Error()
@@ -277,15 +208,9 @@ func runProbe(parent context.Context, req probeRequest) *ProbeResult {
 	if req.proxyName != "" {
 		dialer.proxy = lookupProxy(req.proxyName)
 		if dialer.proxy == nil {
-			result.hits = []RouteHit{{Proxy: req.proxyName}}
-			req.recorder.add(result.hits)
 			return fail(fmt.Errorf("proxy %q is not part of the applied config", req.proxyName))
 		}
 	}
-	defer func() {
-		result.hits = dialer.hits(req.proxyName)
-		req.recorder.add(result.hits)
-	}()
 	tlsConfig, err := ca.GetTLSConfig(ca.Option{})
 	if err != nil {
 		return fail(err)
@@ -295,10 +220,13 @@ func runProbe(parent context.Context, req probeRequest) *ProbeResult {
 	if timeout <= 0 {
 		timeout = defaultProbeTimeout
 	}
-	if !probeSlots.acquireWithin(parent, timeout) {
+	queueCtx, cancelQueue := context.WithTimeout(parent, timeout)
+	granted := acquireSlot(queueCtx, probeSlots)
+	cancelQueue()
+	if !granted {
 		return nil
 	}
-	defer probeSlots.release()
+	defer func() { <-probeSlots }()
 
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
@@ -378,4 +306,16 @@ func readProbeBody(body io.Reader, maxBody int64, until func(string) bool) strin
 		}
 	}
 	return buffer.String()
+}
+
+func acquireSlot(ctx context.Context, slots chan struct{}) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

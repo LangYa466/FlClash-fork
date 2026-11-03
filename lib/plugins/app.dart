@@ -15,7 +15,6 @@ class App {
   late MethodChannel methodChannel;
   Function()? onExit;
   Function()? onPackagesChanged;
-  final floatingKeyboard = ValueNotifier(false);
 
   App._internal() {
     methodChannel = const MethodChannel('$packageName/app');
@@ -27,8 +26,6 @@ class App {
           }
         case 'packagesChanged':
           onPackagesChanged?.call();
-        case 'floatingImeChanged':
-          floatingKeyboard.value = call.arguments as bool;
         default:
           throw MissingPluginException();
       }
@@ -67,15 +64,6 @@ class App {
         false;
   }
 
-  /// Android 17 drops traffic between the app and the local network until the
-  /// user grants this; earlier versions answer true.
-  Future<bool> requestLocalNetworkPermission() async {
-    return await methodChannel.invokeMethod<bool>(
-          'requestLocalNetworkPermission',
-        ) ??
-        false;
-  }
-
   Future<List<String>> getChinaPackageNames() async {
     final packageNamesString = await methodChannel.invokeMethod<String>(
       'getChinaPackageNames',
@@ -85,9 +73,21 @@ class App {
     return packageNamesRaw.map((e) => e.toString()).toList();
   }
 
+  Future<bool?> requestNotificationsPermission() async {
+    return methodChannel.invokeMethod<bool>('requestNotificationsPermission');
+  }
+
+  Future<bool> openFile(String path) async {
+    return await methodChannel.invokeMethod<bool>('openFile', {'path': path}) ??
+        false;
+  }
+
   final Map<String, ImageProvider?> _packageIcons = {};
   final Map<String, Future<ImageProvider?>> _packageIconTasks = {};
-  final TaskPool _packageIconPool = TaskPool(maxConcurrentIconLoads);
+
+  bool hasPackageIcon(String packageName) {
+    return _packageIcons.containsKey(packageName);
+  }
 
   ImageProvider? getCachedPackageIcon(String packageName) {
     return _packageIcons[packageName];
@@ -112,11 +112,9 @@ class App {
 
   Future<ImageProvider?> _requestPackageIcon(String packageName) async {
     try {
-      final path = await _packageIconPool.run(
-        () => methodChannel.invokeMethod<String>('getPackageIcon', {
-          'packageName': packageName,
-        }),
-      );
+      final path = await methodChannel.invokeMethod<String>('getPackageIcon', {
+        'packageName': packageName,
+      });
       if (path == null || path.isEmpty) {
         return null;
       }
@@ -138,17 +136,26 @@ class App {
   }
 
   Future<bool?> initShortcuts() async {
-    return methodChannel.invokeMethod<bool>('initShortcuts', {
-      'start': currentAppLocalizations.start,
-      'stop': currentAppLocalizations.stop,
-      'toggle': currentAppLocalizations.toggle,
-    });
+    return methodChannel.invokeMethod<bool>(
+      'initShortcuts',
+      currentAppLocalizations.toggle,
+    );
   }
 
   Future<bool?> updateExcludeFromRecents(bool value) async {
     return methodChannel.invokeMethod<bool>('updateExcludeFromRecents', {
       'value': value,
     });
+  }
+
+  Future<bool?> isBatteryOptimizationDisabled() async {
+    if (!Platform.isAndroid) return true;
+    return methodChannel.invokeMethod<bool>('isBatteryOptimizationDisabled');
+  }
+
+  Future<bool?> openBatteryOptimizationSettings() async {
+    if (!Platform.isAndroid) return false;
+    return methodChannel.invokeMethod<bool>('openBatteryOptimizationSettings');
   }
 
   Future<bool?> openAppSettings() async {

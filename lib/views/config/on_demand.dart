@@ -1,23 +1,23 @@
 import 'dart:async';
 
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/common/permission.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/features/overwrite/overwrite.dart';
+import 'package:fl_clash/icons/icons.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
-import 'package:fl_clash/ui/icons/icons.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:wifi_ssid/wifi_ssid.dart';
 
 class OnDemandView extends ConsumerStatefulWidget {
-  const OnDemandView({super.key, this.isAndroid, this.isMacOS, this.isWindows});
+  const OnDemandView({super.key, this.isAndroid, this.isMacOS});
 
   final bool? isAndroid;
   final bool? isMacOS;
-  final bool? isWindows;
 
   @override
   ConsumerState createState() => _OnDemandViewState();
@@ -28,49 +28,33 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
   static const _authorizeButtonPadding = 12.0;
   static const _minAuthorizeButtonWidth = 80.0;
 
+  bool _requestingLocation = false;
+
   bool get _isAndroid => widget.isAndroid ?? system.isAndroid;
 
   bool get _isMacOS => widget.isMacOS ?? system.isMacOS;
 
-  bool get _isWindows => widget.isWindows ?? system.isWindows;
-
-  bool get _needsLocationPermission => _isAndroid || _isMacOS || _isWindows;
-
   void _handlePermanentlyDeniedLocationPermission() {
     if (_isMacOS) {
       final appLocalizations = context.appLocalizations;
-      dialogs.showAlert(
+      dialogs.showMessage(
         title: appLocalizations.locationPermissionRequired,
+        cancelable: false,
         message: TextSpan(
-          style: AppTextStyle.subheadline.of(context),
+          style: context.textTheme.bodyMedium,
           text: appLocalizations.locationPermissionGuide(appName),
         ),
       );
     } else if (_isAndroid) {
       app?.openAppSettings();
-    } else if (_isWindows) {
-      unawaited(_promptLocationSettings());
-    }
-  }
-
-  Future<void> _promptLocationSettings() async {
-    final appLocalizations = context.appLocalizations;
-    final needGo = await dialogs.showMessage(
-      title: appLocalizations.locationPermissionRequired,
-      message: TextSpan(text: appLocalizations.locationPermissionDeniedMessage),
-      confirmText: appLocalizations.go,
-    );
-    if (needGo != true) {
-      return;
-    }
-    if (_isWindows) {
-      unawaited(launchUrl(Uri.parse('ms-settings:privacy-location')));
-    } else {
-      unawaited(app?.openAppSettings());
     }
   }
 
   Future<void> _handleRequestLocationPermission() async {
+    if (_requestingLocation) {
+      return;
+    }
+    final appLocalizations = context.appLocalizations;
     final permission = ref.read(locationPermissionsProvider);
     if (permission == WifiSsidPermission.granted) {
       return;
@@ -79,32 +63,48 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
       _handlePermanentlyDeniedLocationPermission();
       return;
     }
-    final WifiSsidPermission? res;
+    final permissionsNotifier = ref.read(locationPermissionsProvider.notifier);
+    final WifiSsidPermission res;
+    _requestingLocation = true;
     try {
-      res = await ref.read(locationPermissionsProvider.notifier).request();
+      res = await wifiSsidManager.requestPermission();
     } on PlatformException catch (e) {
       commonPrint.log('requestPermission error $e', logLevel: LogLevel.warning);
       return;
+    } finally {
+      _requestingLocation = false;
     }
-    if (res == null || !mounted) {
+    permissionsNotifier.value = res;
+    if (!mounted) {
       return;
     }
-    switch (res) {
-      case WifiSsidPermission.granted:
+    switch (getLocationPermissionFollowUp(res)) {
+      case LocationPermissionFollowUp.none:
         return;
-      case WifiSsidPermission.permanentlyDenied:
+      case LocationPermissionFollowUp.openSettings:
         _handlePermanentlyDeniedLocationPermission();
         return;
-      case WifiSsidPermission.denied:
-        await _promptLocationSettings();
+      case LocationPermissionFollowUp.showDeniedMessage:
+        break;
     }
-  }
-
-  void _handleRequestIgnoreBatteryOptimization() {
-    if (ref.read(batteryOptimizationIgnoredProvider).value == true) {
+    final needGo = await dialogs.showMessage(
+      title: appLocalizations.locationPermissionRequired,
+      message: TextSpan(text: appLocalizations.locationPermissionDeniedMessage),
+      confirmText: appLocalizations.go,
+    );
+    if (needGo != true) {
       return;
     }
-    unawaited(ref.read(batteryOptimizationIgnoredProvider.notifier).request());
+    unawaited(app?.openAppSettings());
+  }
+
+  void _handleOpenBatteryOptimizationSettings() {
+    final isDisabled = ref.read(batteryOptimizationDisableProvider);
+    if (isDisabled) {
+      return;
+    }
+    permissions.needWaitingBatteryOptimizationSettings = true;
+    app?.openBatteryOptimizationSettings();
   }
 
   Future<void> _handleAddOrUpdate([String? ssid]) async {
@@ -163,6 +163,7 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
           position: position,
           child: SelectedDecorationListItem(
             isEditing: isEditing,
+            minVerticalPadding: 8,
             title: TooltipText(
               text: Text(ssid, maxLines: 2, overflow: TextOverflow.ellipsis),
             ),
@@ -208,12 +209,7 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
       child: ElasticButton(
         child: FilledButton(
           style: FilledButton.styleFrom(
-            backgroundColor: authorized
-                ? null
-                : context.colorScheme.errorContainer,
-            foregroundColor: authorized
-                ? null
-                : context.colorScheme.onErrorContainer,
+            backgroundColor: authorized ? null : context.colorScheme.error,
             padding: const EdgeInsets.symmetric(
               horizontal: _authorizeButtonPadding,
             ),
@@ -247,31 +243,60 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
 
   Widget _buildPrerequisiteItem({
     required String title,
+    required String desc,
     required Widget action,
   }) {
-    return DecorationListItem(title: TooltipLabel(title), trailing: action);
+    return DecorationListItem(
+      minVerticalPadding: 0,
+      title: Padding(
+        padding: const EdgeInsets.only(top: 12),
+        child: TooltipLabel(title),
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          spacing: 8,
+          children: [
+            Text(desc),
+            Align(alignment: Alignment.centerRight, child: action),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildBatteryOptimizationItem() {
     final appLocalizations = context.appLocalizations;
-    final ignored = ref.watch(batteryOptimizationIgnoredProvider);
-    final isLoading = ignored.isLoading;
+    // HyperOS takes a running VPN app off the battery optimization whitelist,
+    // so the status reads as not authorized until the VPN stops.
+    final isStart = ref.watch(isStartProvider);
+    final isLoading = ref.watch(
+      loadingProvider(LoadingTag.batteryOptimization),
+    );
+    final disabled = ref.watch(batteryOptimizationDisableProvider);
     return _buildPrerequisiteItem(
       title: appLocalizations.ignoreBatteryOptimization,
+      desc: appLocalizations.batteryOptimizationDesc,
       action: Stack(
         alignment: Alignment.centerRight,
         children: [
           Visibility(
-            visible: !isLoading,
+            visible: !isLoading && !isStart,
             maintainSize: true,
             maintainAnimation: true,
             maintainState: true,
             child: _buildAuthorizeButton(
-              authorized: ignored.value ?? false,
-              onPressed: _handleRequestIgnoreBatteryOptimization,
+              authorized: disabled,
+              onPressed: _handleOpenBatteryOptimizationSettings,
             ),
           ),
-          if (isLoading) const CommonCircleLoading(size: 24),
+          if (isStart)
+            InfoMessageButton(
+              message: appLocalizations.batteryOptimizationStatusTip,
+            ),
+          if (!isStart && isLoading)
+            const SizedBox.square(dimension: 32, child: CommonCircleLoading()),
         ],
       ),
     );
@@ -286,6 +311,7 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
     );
     return _buildPrerequisiteItem(
       title: appLocalizations.locationPermission,
+      desc: appLocalizations.locationPermissionDesc,
       action: _buildAuthorizeButton(
         authorized: granted,
         onPressed: _handleRequestLocationPermission,
@@ -294,17 +320,12 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
   }
 
   Widget _buildPrerequisites() {
-    final appLocalizations = context.appLocalizations;
-    return generateSection(
-      title: appLocalizations.prerequisites,
+    return generateSectionV3(
+      title: context.appLocalizations.prerequisites,
       items: [
         if (_isAndroid) _buildBatteryOptimizationItem(),
-        if (_needsLocationPermission) _buildLocationPermissionItem(),
+        if (_isAndroid || _isMacOS) _buildLocationPermissionItem(),
       ],
-      footer: [
-        if (_isAndroid) appLocalizations.batteryOptimizationDesc,
-        if (_needsLocationPermission) appLocalizations.locationPermissionDesc,
-      ].join('\n'),
     );
   }
 
@@ -313,24 +334,31 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
     final hasSelection = ref.watch(itemsProvider(key)).isNotEmpty;
     return ListHeader(
       title: appLocalizations.excludeSsids,
+      subTitle: appLocalizations.excludeSsidsDesc,
       actions: [
-        if (hasSelection) ...[
-          IconButtonData(
-            glyph: AppGlyphs.delete,
-            tooltip: appLocalizations.delete,
-            onPressed: _handleDelete,
+        if (hasSelection)
+          CommonMinIconButtonTheme(
+            child: ElasticButton(
+              child: IconButton.filledTonal(
+                tooltip: context.appLocalizations.delete,
+                onPressed: _handleDelete,
+                icon: const GlyphIcon(AppGlyphs.delete, fill: 1),
+              ),
+            ),
           ),
-          IconButtonData(
-            glyph: AppGlyphs.selectAll,
-            tooltip: appLocalizations.selectAll,
-            onPressed: _handleSelectAll,
+        CommonMinFilledButtonTheme(
+          child: ElasticButton(
+            child: hasSelection
+                ? FilledButton(
+                    onPressed: _handleSelectAll,
+                    child: Text(appLocalizations.selectAll),
+                  )
+                : FilledButton.tonal(
+                    onPressed: _handleAddOrUpdate,
+                    child: Text(appLocalizations.add),
+                  ),
           ),
-        ] else
-          IconButtonData(
-            glyph: AppGlyphs.addCircle,
-            tooltip: appLocalizations.add,
-            onPressed: _handleAddOrUpdate,
-          ),
+        ),
       ],
     );
   }
@@ -382,7 +410,7 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
           SliverPadding(
             padding: const EdgeInsets.symmetric(
               horizontal: 16,
-            ).copyWith(top: context.sectionsTopPadding),
+            ).copyWith(top: context.appBarInset),
             sliver: SliverToBoxAdapter(child: _buildPrerequisites()),
           ),
           SliverPadding(
@@ -390,16 +418,6 @@ class _OnDemandViewState extends ConsumerState<OnDemandView>
             sliver: SliverToBoxAdapter(child: _buildExcludeSsidsHeader()),
           ),
           _buildExcludeSsidsList(excludeSSIDs, selectedItems),
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16,
-            ).copyWith(bottom: 16 + context.bottomInset),
-            sliver: SliverToBoxAdapter(
-              child: ListFooter(
-                text: context.appLocalizations.excludeSsidsDesc,
-              ),
-            ),
-          ),
         ],
       ),
       title: context.appLocalizations.onDemand,

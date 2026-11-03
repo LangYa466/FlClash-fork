@@ -13,11 +13,8 @@ class PreviewProfileView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return EditorPage(
       title: profile.realLabel,
-      load: () async => CodeForgeDocument.fromText(
-        await ref
-            .read(setupActionProvider.notifier)
-            .getProfileWithId(profile.id),
-      ),
+      load: () =>
+          ref.read(setupActionProvider.notifier).getProfileWithId(profile.id),
     );
   }
 }

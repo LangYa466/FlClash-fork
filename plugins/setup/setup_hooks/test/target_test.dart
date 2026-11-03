@@ -6,8 +6,8 @@ void main() {
   group('resolve', () {
     test('finds the target for a platform and GOARCH', () {
       expect(
-        Target.resolve(platform: 'linux', goarch: 'arm64'),
-        Target.linuxArm64,
+        Target.resolve(platform: 'android', goarch: 'arm'),
+        Target.androidArm,
       );
       expect(
         Target.resolve(platform: 'macos', goarch: 'arm64'),
@@ -31,6 +31,14 @@ void main() {
     });
   });
 
+  test('Android ABIs match the :core Gradle module', () {
+    expect(Target.forPlatform('android').map((target) => target.abi), [
+      'armeabi-v7a',
+      'arm64-v8a',
+      'x86_64',
+    ]);
+  });
+
   test('only Linux and Windows ship the Helper', () {
     expect(Target.all.where((target) => target.hasHelper), [
       Target.linuxArm64,
@@ -38,6 +46,13 @@ void main() {
       Target.windowsAmd64,
       Target.windowsArm64,
     ]);
+  });
+
+  test('names the NDK clang wrapper per ABI', () {
+    expect(Target.androidArm.ndkTriple, 'armv7a-linux-androideabi');
+    expect(Target.androidArm64.ndkTriple, 'aarch64-linux-android');
+    expect(Target.androidAmd64.ndkTriple, 'x86_64-linux-android');
+    expect(() => Target.macosArm64.ndkTriple, throwsA(isA<BuildException>()));
   });
 
   test('names the Rust target triple for Helper platforms', () {
